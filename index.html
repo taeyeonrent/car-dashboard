@@ -71,18 +71,24 @@ footer{text-align:center;color:#bbb;font-size:11px;padding:20px;}
 
 <div class="connect-bar">
   <label>시트 ID</label>
-  <input id="sheetIdInput" placeholder="구글 스프레드시트 ID">
+  <input id="sheetIdInput" placeholder="구글 스프레드시트 ID" value="14j3hDW3Hn-1ftkJlqZhEZhWTt38eZU8S4yMoadenrR4">
   <label>탭 이름</label>
-  <input id="sheetNameInput" placeholder="예: 자산관리" value="자산관리">
+  <input id="sheetNameInput" placeholder="예: 자산관리" value="차량 RAW DATA">
   <button class="btn-load" onclick="loadAll()">불러오기</button>
   <span id="statusMsg"></span>
 </div>
 
 <main>
-  <div id="content"><div class="empty-state">시트 ID와 탭 이름을 입력하고 "불러오기"를 눌러주세요.<br>차량 원본 데이터(매입구분·매입계약일·자산상태·상품등록일·신차구분·시리즈명·년형·유종 컬럼 포함) 탭을 그대로 연결하면 됩니다.</div></div>
+  <div id="content"><div class="empty-state">불러오는 중...</div></div>
 </main>
 
 <footer>재고현황판 · 원본 차량데이터 기준 · 분류/집계는 브라우저에서 자동 계산</footer>
+
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  if(document.getElementById('sheetIdInput').value.trim()) loadAll();
+});
+</script>
 
 <script>
 // ===== 분류 기준 (여기 값만 바꾸면 기준 조정 가능) =====
@@ -103,6 +109,7 @@ function parseYMD(s){
 function daysSince(d){ return Math.round((TODAY - d) / 86400000); }
 
 let rows = null; // classified: {gubun, name, grade, year, fuel}
+let shipRows = null; // {gubun, name} from 탁송데이터
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
 
@@ -176,10 +183,37 @@ async function loadAll(){
 
     document.getElementById('lastUpdate').textContent = '마지막 업데이트: ' + new Date().toLocaleString('ko-KR');
     setStatus(`불러오기 완료 (재고 ${rows.length}건 / 원본 ${raw.length}행)`, false);
+
+    // 탁송데이터(이번달 출고) 함께 로드 - 실패해도 재고 표시는 계속 진행
+    try{
+      const shipUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('탁송데이터')}`;
+      const shipRes = await fetch(shipUrl);
+      const shipText = await shipRes.text();
+      const sm = shipText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
+      if(sm){
+        const shipJson = JSON.parse(sm[1]);
+        if(shipJson.table && shipJson.table.rows){
+          const scols = shipJson.table.cols.map(c=>c.label);
+          const sidx = n => scols.findIndex(c=>c && c.includes(n));
+          const iSGubun=sidx('신차구분'), iSName=sidx('차종'), iSAsset=sidx('자산번호');
+          shipRows = shipJson.table.rows.map(r=>{
+            const c=r.c;
+            const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
+            return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset) };
+          }).filter(r=>r.asset && r.name);
+        }
+      }
+    }catch(e){ /* 탁송데이터 로드 실패는 무시 - 재고 표시는 그대로 */ }
+
     render();
   }catch(e){
     setStatus('오류: '+e.message, true);
   }
+}
+
+function shipCount(gubunFilter, name){
+  if(!shipRows) return null;
+  return shipRows.filter(r=> r.gubun===gubunFilter && r.name===name).length;
 }
 
 function groupByModel(arr){
@@ -216,22 +250,27 @@ function detailHtml(items, colspan){
   </td></tr>`;
 }
 
-function renderTable(models, openName, onClick, hasM){
-  const cols = hasM ? ['차종','총재고','장기','반장기','정상'] : ['차종','총재고','장기','정상'];
+function renderTable(models, openName, onClick, hasM, shipGubun){
+  const showShip = !!shipRows;
+  const cols = hasM
+    ? ['차종','총재고','장기','반장기','정상']
+    : ['차종','총재고','장기','정상'];
+  const colsWithShip = showShip ? [...cols, '이번달출고'] : cols;
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
     const cells = hasM
       ? `<td>${m.total}</td><td>${m.long}</td><td>${m.mid}</td><td>${m.normal}</td>`
       : `<td>${m.total}</td><td>${m.long}</td><td>${m.normal}</td>`;
+    const shipCell = showShip ? `<td>${shipCount(shipGubun, m.name)}</td>` : '';
     let html = `<tr class="model-row ${isOpen?'open':''}" onclick="${onClick}('${m.name.replace(/'/g,"\\'")}')">
-      <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}
+      <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}${shipCell}
     </tr>`;
-    if(isOpen){ html += detailHtml(m.items, cols.length); }
+    if(isOpen){ html += detailHtml(m.items, colsWithShip.length); }
     return html;
   }).join('');
   return `<table class="inv-table">
-    <thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
-    <tbody>${rowsHtml || `<tr><td colspan="${cols.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
+    <thead><tr>${colsWithShip.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+    <tbody>${rowsHtml || `<tr><td colspan="${colsWithShip.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
   </table>`;
 }
 
@@ -271,9 +310,9 @@ function render(){
     <div class="card">
       <div class="card-header"><div>
         <div class="card-title">신차 상세</div>
-        <div class="card-sub">매입계약일 기준 · D+60↑ 장기 · D+30~59 반장기 · D+29↓ 정상</div>
+        <div class="card-sub">매입계약일 기준 · D+60↑ 장기 · D+30~59 반장기 · D+29↓ 정상${shipRows?' · 이번달출고 = 탁송데이터 기준':''}</div>
       </div></div>
-      ${renderTable(groupByModel(shin), openShin, 'toggleShin', true)}
+      ${renderTable(groupByModel(shin), openShin, 'toggleShin', true, '신차')}
     </div>
 
     <div class="card">
@@ -287,7 +326,7 @@ function render(){
           <button class="seg-btn ${rejaMode==='중고매입'?'active':''}" onclick="setRejaMode('중고매입')" style="${rejaMode==='중고매입'?'color:#f5a623;':''}">중고매입</button>
         </div>
       </div>
-      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false)}
+      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트')}
     </div>
   `;
 }
