@@ -187,6 +187,8 @@ async function loadAll(){
             const d = daysSince(pd);
             grade = d>=60 ? '장기' : d>=30 ? '반장기' : '정상';
           }
+        } else {
+          grade = '정상'; // 구매완료 등 아직 재고연령 매기기 이른 상태는 정상재고로 집계
         }
       } else if(r.newcar==='재렌트' && r.buy==='자사매입' && REJA_SET.has(r.status)){
         gubun = '재렌트-자사매입';
@@ -224,6 +226,7 @@ async function loadAll(){
             shipStatus = ` / 탁송 탭에서 "신차구분"·"차종" 컬럼을 못 찾음`;
           } else {
             const curMonthText = (TODAY.getMonth()+1)+'월';
+            const curMonthNum = TODAY.getMonth()+1;
             let filterNote = '';
             let allShipRows = shipJson.table.rows.map(r=>{
               const c=r.c;
@@ -231,19 +234,28 @@ async function loadAll(){
               return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset), month:v(iSMonth), reqDate:v(iSReqDate), hopeDate:v(iSHopeDate) };
             }).filter(r=>r.asset && r.name);
             const beforeFilter = allShipRows.length;
-            if(iSMonth>=0){
-              allShipRows = allShipRows.filter(r=>String(r.month).includes(curMonthText));
-              filterNote = `"월" 컬럼(${curMonthText}) 기준 필터링`;
-            } else if(iSHopeDate>=0 || iSReqDate>=0){
-              allShipRows = allShipRows.filter(r=>{
+            let filtered = allShipRows;
+            if(iSHopeDate>=0 || iSReqDate>=0){
+              filtered = allShipRows.filter(r=>{
                 const d = parseYMD(r.hopeDate) || parseYMD(r.reqDate);
                 return d && d.getFullYear()===TODAY.getFullYear() && d.getMonth()===TODAY.getMonth();
               });
-              filterNote = `날짜 컬럼 기준 이번달로 필터링`;
+              filterNote = `희망일자(DATEVALUE) 기준 ${TODAY.getFullYear()}년 ${curMonthNum}월로 필터링`;
+            } else if(iSMonth>=0){
+              filtered = allShipRows.filter(r=>{
+                const mv = String(r.month).trim();
+                return mv.includes(curMonthText) || mv === String(curMonthNum) || parseInt(mv)===curMonthNum;
+              });
+              filterNote = `"월" 컬럼(${curMonthText}) 기준 필터링`;
             } else {
               filterNote = `월 필터 컬럼을 못 찾아 전체 기간 합산됨 - 주의`;
             }
-            shipRows = allShipRows;
+            // 안전장치: 원본은 있는데 필터링 결과가 0건이면 필터 기준이 안 맞는 것으로 보고 무필터로 폴백
+            if(beforeFilter>0 && filtered.length===0){
+              filtered = allShipRows;
+              filterNote += ` → 필터 결과 0건이라 필터 없이 전체 표시함(월 컬럼 형식을 확인해줘)`;
+            }
+            shipRows = filtered;
             shipStatus = ` / 이번달출고 ${shipRows.length}건(원본 ${beforeFilter}건, ${filterNote})`;
           }
         } else {
