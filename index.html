@@ -231,7 +231,10 @@ async function loadAll(){
         if(salesJson.table && salesJson.table.rows){
           const lcols = salesJson.table.cols.map(c=>c.label);
           const lidx = n => lcols.findIndex(c=>c && c.includes(n));
-          const iLDate=lidx('계약실행일'), iLName=lidx('차종'), iLGubun=lidx('신차구분');
+          let iLDate=lidx('계약실행일'), iLName=lidx('차종');
+          let iLGubun=lidx('상품구분');
+          if(iLGubun<0) iLGubun=lidx('신차구분');
+          if(iLDate<0 && lcols.length>31) iLDate=31; // 헤더명이 안 잡히면 AF열(0-idx 31)을 계약실행일로 간주
           if(iLDate<0 || iLName<0){
             salesStatus = ` / 판매 탭에서 "계약실행일"·"차종" 컬럼을 못 찾음`;
           } else {
