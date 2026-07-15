@@ -57,6 +57,12 @@ table.inv-table{width:100%;border-collapse:collapse;font-size:11.5px;}
 .detail-stats{display:flex;gap:14px;font-size:11px;color:#555;flex-wrap:wrap;}
 .detail-stats b{color:#1c1c2e;}
 
+.mini-bar-wrap{display:flex;align-items:center;gap:6px;}
+.mini-bar{flex:1;display:flex;height:10px;border-radius:3px;overflow:hidden;background:#f0f2f7;min-width:60px;}
+.mini-bar span{color:#999;font-size:10.5px;white-space:nowrap;}
+.arrow-cell{white-space:nowrap;}
+.arrow-cell b{color:#6C63FF;}
+
 .empty-state{padding:50px;text-align:center;color:#aaa;font-size:13px;}
 footer{text-align:center;color:#bbb;font-size:11px;padding:20px;}
 @media(max-width:700px){.summary-row{grid-template-columns:1fr;}}
@@ -350,67 +356,103 @@ function groupByModel(arr){
 }
 
 function breakdown(items){
-  const byYear={}, byFuel={};
+  const byYear = {}; // { year: { fuel: count, __total: n } }
   items.forEach(r=>{
-    if(r.year){ byYear[r.year]=(byYear[r.year]||0)+1; }
-    if(r.fuel){ byFuel[r.fuel]=(byFuel[r.fuel]||0)+1; }
+    const y = r.year || '년형미상';
+    if(!byYear[y]) byYear[y] = {__total:0};
+    byYear[y].__total++;
+    const f = r.fuel || '유종미상';
+    byYear[y][f] = (byYear[y][f]||0)+1;
   });
-  return {byYear, byFuel};
+  return byYear;
 }
 
-function detailHtml(items, colspan){
-  const {byYear, byFuel} = breakdown(items);
-  const yearHtml = Object.entries(byYear).sort().map(([k,v])=>`<span>${k} <b>${v}</b></span>`).join('');
-  const fuelHtml = Object.entries(byFuel).map(([k,v])=>`<span>${k} <b>${v}</b></span>`).join('');
+function detailHtml(m, colspan, shipGubun, showSales, hasM){
+  const byYear = breakdown(m.items);
+  const years = Object.keys(byYear).sort();
+  const yearRows = years.map(y=>{
+    const data = byYear[y];
+    const fuels = Object.entries(data).filter(([k])=>k!=='__total');
+    const fuelStr = fuels.map(([f,n])=>`${f} <b>${n}</b>`).join(' · ');
+    return `<div style="display:flex;gap:8px;font-size:11px;color:#555;">
+      <span style="min-width:70px;font-weight:600;color:#1c1c2e;">${y} (${data.__total})</span>
+      <span>${fuelStr}</span>
+    </div>`;
+  }).join('');
+
+  const gradeParts = [`장기 <b>${m.long}</b>`];
+  if(hasM) gradeParts.push(`반장기 <b>${m.mid}</b>`);
+  gradeParts.push(`정상 <b>${m.normal}</b>`);
+  if(!hasM) gradeParts.push(`상품화진행중 <b>${m.prep}</b>`);
+  const gradeLine = gradeParts.join(' · ');
+
+  let salesLine = '';
+  if(showSales){
+    const avg3 = recentAvg(shipGubun, m.name, 3).toFixed(1);
+    const lastYear = sameMonthLastYear(shipGubun, m.name);
+    salesLine = `<div style="font-size:10px;color:#999;margin-top:8px;">최근3개월평균 <b style="color:#1c1c2e;">${avg3}</b> · 작년동월 <b style="color:#1c1c2e;">${lastYear}</b></div>`;
+  }
+
   return `<tr><td colspan="${colspan}" class="detail-cell">
     <div class="detail-box">
-      <div class="detail-label">년형별 · 유종별</div>
-      <div class="detail-stats">${yearHtml||'<span style="color:#bbb;">년형 정보 없음</span>'}${fuelHtml ? '<span style="margin-left:8px;"></span>'+fuelHtml : ''}</div>
+      <div class="detail-label">재고 등급</div>
+      <div style="font-size:11px;color:#555;margin-bottom:8px;">${gradeLine}</div>
+      <div class="detail-label">년형별 유종 구성</div>
+      <div style="display:flex;flex-direction:column;gap:4px;">${yearRows || '<span style="color:#bbb;font-size:11px;">년형 정보 없음</span>'}</div>
+      ${salesLine}
     </div>
   </td></tr>`;
+}
+
+function miniBar(m, hasM){
+  const total = m.total || 1;
+  const longPct = m.long/total*100;
+  const midPct = hasM ? m.mid/total*100 : 0;
+  const normalPct = m.normal/total*100;
+  return `<div class="mini-bar-wrap">
+    <div class="mini-bar">
+      <div style="width:${longPct}%;background:#e2483d;"></div>
+      ${hasM?`<div style="width:${midPct}%;background:#f5a623;"></div>`:''}
+      <div style="width:${normalPct}%;background:#22c997;"></div>
+    </div>
+    <span>${m.total}대</span>
+  </div>`;
 }
 
 function renderTable(models, openName, onClick, hasM, shipGubun){
   const showShip = !!shipRows;
   const showSales = !!salesRows;
   const biz = showShip ? getBusinessDays() : null;
-  const cols = hasM
-    ? ['차종','총재고','장기','반장기','정상']
-    : ['차종','총재고','장기','정상','상품화진행중'];
+  const cols = hasM ? ['차종','재고 구성'] : ['차종','재고 구성','상품화진행중'];
   let colsWithShip = cols;
-  if(showShip) colsWithShip = [...colsWithShip, '이번달출고', '마감예상출고', '마감예상재고'];
-  if(showSales) colsWithShip = [...colsWithShip, '최근3개월평균', '작년동월'];
-  if(showShip) colsWithShip = [...colsWithShip, '익월대비 구매필요'];
+  if(showShip) colsWithShip = [...colsWithShip, '이번달→마감예상 출고', '마감예상재고'];
+  if(showShip && hasM) colsWithShip = [...colsWithShip, '익월대비 구매필요'];
+
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
-    const cells = hasM
-      ? `<td>${m.total}</td><td>${m.long}</td><td>${m.mid}</td><td>${m.normal}</td>`
-      : `<td>${m.total}</td><td>${m.long}</td><td>${m.normal}</td><td>${m.prep}</td>`;
+    const cells = `<td>${miniBar(m, hasM)}</td>${hasM?'':`<td>${m.prep}</td>`}`;
     let midCell = '', tailCell = '';
     let projStock = null;
     if(showShip){
       const sc = shipCount(shipGubun, m.name);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
       projStock = Math.max(0, m.total - proj);
-      midCell = `<td>${sc}</td><td style="font-weight:600;color:#6C63FF;">${proj}</td><td>${projStock}</td>`;
+      midCell = `<td class="arrow-cell">${sc} → <b>${proj}</b></td><td style="font-weight:600;">${projStock}</td>`;
     }
     let expectedDemand = null;
     if(showSales){
-      const avg3 = recentAvg(shipGubun, m.name, 3);
-      const lastYear = sameMonthLastYear(shipGubun, m.name);
-      expectedDemand = avg3;
-      midCell += `<td>${avg3.toFixed(1)}</td><td>${lastYear}</td>`;
+      expectedDemand = recentAvg(shipGubun, m.name, 3);
     }
-    if(showShip){
+    if(showShip && hasM){
       const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name)/biz.elapsed*biz.total : shipCount(shipGubun,m.name));
       const buyNeed = Math.max(0, Math.round(basis - projStock));
       const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;' : 'color:#999;';
-      tailCell = `<td style="${buyStyle}">${buyNeed}</td>`;
+      tailCell = `<td style="${buyStyle}">${buyNeed>0?'+':''}${buyNeed}</td>`;
     }
     let html = `<tr class="model-row ${isOpen?'open':''}" onclick="${onClick}('${m.name.replace(/'/g,"\\'")}')">
       <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}${midCell}${tailCell}
     </tr>`;
-    if(isOpen){ html += detailHtml(m.items, colsWithShip.length); }
+    if(isOpen){ html += detailHtml(m, colsWithShip.length, shipGubun, showSales, hasM); }
     return html;
   }).join('');
   return `<table class="inv-table">
