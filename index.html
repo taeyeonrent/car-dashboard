@@ -128,6 +128,7 @@ function daysSince(d){ return Math.round((TODAY - d) / 86400000); }
 let rows = null; // classified: {gubun, name, grade, year, fuel}
 let shipRows = null; // {gubun, name} from 탁송데이터
 let salesRows = null; // {gubun, name, monthKey} from 판매현황테스트 (계약실행일 기준)
+let assetBuyMap = {}; // 자산번호 -> 매입구분(자사매입/중고매입), 차량 RAW DATA에서 구축
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
 
@@ -155,7 +156,7 @@ async function loadAll(){
     const idx = n => cols.findIndex(c=>c && c.includes(n));
     const iBuy=idx('매입구분'), iPDate=idx('매입계약일'), iStatus=idx('자산상태'),
           iRDate=idx('상품등록일'), iNewcar=idx('신차구분'), iName=idx('시리즈명'),
-          iYear=idx('년형'), iFuel=idx('유종');
+          iYear=idx('년형'), iFuel=idx('유종'), iAsset=idx('자산번호');
 
     if(iBuy<0||iPDate<0||iStatus<0||iNewcar<0||iName<0){
       throw new Error('필요한 컬럼(매입구분/매입계약일/자산상태/신차구분/시리즈명)을 찾을 수 없어요. 헤더명을 확인해주세요.');
@@ -166,9 +167,13 @@ async function loadAll(){
       const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
       return {
         buy:v(iBuy), pdate:v(iPDate), status:v(iStatus), rdate:v(iRDate),
-        newcar:v(iNewcar), name:v(iName), year:v(iYear), fuel:v(iFuel)
+        newcar:v(iNewcar), name:v(iName), year:v(iYear), fuel:v(iFuel), asset:v(iAsset)
       };
     });
+
+    // 자산번호 -> 매입구분(자사매입/중고매입) 매핑 - 탁송데이터 출고건의 자사/중고 구분에 사용
+    assetBuyMap = {};
+    raw.forEach(r=>{ if(r.asset) assetBuyMap[String(r.asset)] = r.buy; });
 
     rows = [];
     raw.forEach(r=>{
@@ -213,16 +218,33 @@ async function loadAll(){
         if(shipJson.table && shipJson.table.rows){
           const scols = shipJson.table.cols.map(c=>c.label);
           const sidx = n => scols.findIndex(c=>c && c.includes(n));
-          const iSGubun=sidx('신차구분'), iSName=sidx('차종'), iSAsset=sidx('자산번호');
+          const iSGubun=sidx('신차구분'), iSName=sidx('차종'), iSAsset=sidx('자산번호'),
+                iSMonth=sidx('월'), iSReqDate=sidx('요청일시'), iSHopeDate=sidx('희망일자');
           if(iSGubun<0 || iSName<0){
             shipStatus = ` / 탁송 탭에서 "신차구분"·"차종" 컬럼을 못 찾음`;
           } else {
-            shipRows = shipJson.table.rows.map(r=>{
+            const curMonthText = (TODAY.getMonth()+1)+'월';
+            let filterNote = '';
+            let allShipRows = shipJson.table.rows.map(r=>{
               const c=r.c;
               const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
-              return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset) };
+              return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset), month:v(iSMonth), reqDate:v(iSReqDate), hopeDate:v(iSHopeDate) };
             }).filter(r=>r.asset && r.name);
-            shipStatus = ` / 이번달출고 ${shipRows.length}건`;
+            const beforeFilter = allShipRows.length;
+            if(iSMonth>=0){
+              allShipRows = allShipRows.filter(r=>String(r.month).includes(curMonthText));
+              filterNote = `"월" 컬럼(${curMonthText}) 기준 필터링`;
+            } else if(iSHopeDate>=0 || iSReqDate>=0){
+              allShipRows = allShipRows.filter(r=>{
+                const d = parseYMD(r.hopeDate) || parseYMD(r.reqDate);
+                return d && d.getFullYear()===TODAY.getFullYear() && d.getMonth()===TODAY.getMonth();
+              });
+              filterNote = `날짜 컬럼 기준 이번달로 필터링`;
+            } else {
+              filterNote = `월 필터 컬럼을 못 찾아 전체 기간 합산됨 - 주의`;
+            }
+            shipRows = allShipRows;
+            shipStatus = ` / 이번달출고 ${shipRows.length}건(원본 ${beforeFilter}건, ${filterNote})`;
           }
         } else {
           shipStatus = ` / 탁송 탭 데이터 없음`;
@@ -343,9 +365,16 @@ function sameMonthLastYear(gubunFilter, name){
   return salesCountFor(gubunFilter, name, key);
 }
 
-function shipCount(gubunFilter, name){
+function shipCount(gubunFilter, name, buyFilter){
   if(!shipRows) return null;
-  return shipRows.filter(r=> r.gubun===gubunFilter && r.name===name).length;
+  return shipRows.filter(r=>{
+    if(r.gubun!==gubunFilter || r.name!==name) return false;
+    if(buyFilter){
+      const buy = assetBuyMap[String(r.asset)];
+      if(buy!==buyFilter) return false;
+    }
+    return true;
+  }).length;
 }
 
 function groupByModel(arr){
@@ -417,7 +446,7 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
   </td></tr>`;
 }
 
-function renderTable(models, openName, onClick, hasM, shipGubun){
+function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   const showShip = !!shipRows;
   const showSales = !!salesRows;
   const biz = showShip ? getBusinessDays() : null;
@@ -436,7 +465,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun){
     let midCell = '', tailCell = '';
     let projStock = null;
     if(showShip){
-      const sc = shipCount(shipGubun, m.name);
+      const sc = shipCount(shipGubun, m.name, buyFilter);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
       projStock = Math.max(0, m.total - proj);
       midCell = `<td class="arrow-cell">${sc} → <b>${proj}</b></td><td class="emph">${projStock}</td>`;
@@ -446,7 +475,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun){
       expectedDemand = recentAvg(shipGubun, m.name, 3);
     }
     if(showShip && hasM){
-      const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name)/biz.elapsed*biz.total : shipCount(shipGubun,m.name));
+      const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name,buyFilter)/biz.elapsed*biz.total : shipCount(shipGubun,m.name,buyFilter));
       const buyNeed = Math.max(0, Math.round(basis - projStock));
       const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
       tailCell = `<td style="${buyStyle}">${buyNeed>0?'+':''}${buyNeed}</td>`;
@@ -521,7 +550,7 @@ function render(){
           <button class="seg-btn ${rejaMode==='중고매입'?'active':''}" onclick="setRejaMode('중고매입')" style="${rejaMode==='중고매입'?'color:#f5a623;':''}">중고매입</button>
         </div>
       </div>
-      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트')}
+      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트', rejaMode)}
     </div>
   `;
 }
