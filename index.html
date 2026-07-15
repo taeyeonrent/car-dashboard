@@ -74,6 +74,10 @@ footer{text-align:center;color:#bbb;font-size:11px;padding:20px;}
   <input id="sheetIdInput" placeholder="구글 스프레드시트 ID" value="14j3hDW3Hn-1ftkJlqZhEZhWTt38eZU8S4yMoadenrR4">
   <label>탭 이름</label>
   <input id="sheetNameInput" placeholder="예: 자산관리" value="차량 RAW DATA">
+  <label>탁송 탭</label>
+  <input id="shipSheetNameInput" placeholder="예: 탁송데이터" value="탁송데이터" style="width:120px;">
+  <label>판매 탭</label>
+  <input id="salesSheetNameInput" placeholder="예: 판매현황테스트" value="판매현황테스트" style="width:130px;">
   <button class="btn-load" onclick="loadAll()">불러오기</button>
   <span id="statusMsg"></span>
 </div>
@@ -110,6 +114,7 @@ function daysSince(d){ return Math.round((TODAY - d) / 86400000); }
 
 let rows = null; // classified: {gubun, name, grade, year, fuel}
 let shipRows = null; // {gubun, name} from 탁송데이터
+let salesRows = null; // {gubun, name, monthKey} from 판매현황테스트 (계약실행일 기준)
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
 
@@ -181,29 +186,72 @@ async function loadAll(){
       if(gubun) rows.push({gubun, name:r.name, grade, year:r.year, fuel:r.fuel});
     });
 
-    document.getElementById('lastUpdate').textContent = '마지막 업데이트: ' + new Date().toLocaleString('ko-KR');
-    setStatus(`불러오기 완료 (재고 ${rows.length}건 / 원본 ${raw.length}행)`, false);
-
     // 탁송데이터(이번달 출고) 함께 로드 - 실패해도 재고 표시는 계속 진행
+    let shipStatus = '';
+    const shipSheetName = document.getElementById('shipSheetNameInput').value.trim() || '탁송데이터';
     try{
-      const shipUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('탁송데이터')}`;
+      const shipUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(shipSheetName)}`;
       const shipRes = await fetch(shipUrl);
       const shipText = await shipRes.text();
       const sm = shipText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
-      if(sm){
+      if(!sm){ shipStatus = ` / 탁송 탭("${shipSheetName}") 못 찾음`; }
+      else{
         const shipJson = JSON.parse(sm[1]);
         if(shipJson.table && shipJson.table.rows){
           const scols = shipJson.table.cols.map(c=>c.label);
           const sidx = n => scols.findIndex(c=>c && c.includes(n));
           const iSGubun=sidx('신차구분'), iSName=sidx('차종'), iSAsset=sidx('자산번호');
-          shipRows = shipJson.table.rows.map(r=>{
-            const c=r.c;
-            const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
-            return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset) };
-          }).filter(r=>r.asset && r.name);
+          if(iSGubun<0 || iSName<0){
+            shipStatus = ` / 탁송 탭에서 "신차구분"·"차종" 컬럼을 못 찾음`;
+          } else {
+            shipRows = shipJson.table.rows.map(r=>{
+              const c=r.c;
+              const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
+              return { gubun:v(iSGubun), name:v(iSName), asset:v(iSAsset) };
+            }).filter(r=>r.asset && r.name);
+            shipStatus = ` / 이번달출고 ${shipRows.length}건`;
+          }
+        } else {
+          shipStatus = ` / 탁송 탭 데이터 없음`;
         }
       }
-    }catch(e){ /* 탁송데이터 로드 실패는 무시 - 재고 표시는 그대로 */ }
+    }catch(e){ shipStatus = ` / 탁송데이터 로드 오류(${e.message})`; }
+
+    // 판매현황테스트(계약실행일 기준 월별 이력) 로드 - 최근평균/전년동월 비교용
+    let salesStatus = '';
+    const salesSheetName = document.getElementById('salesSheetNameInput').value.trim() || '판매현황테스트';
+    try{
+      const salesUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(salesSheetName)}`;
+      const salesRes = await fetch(salesUrl);
+      const salesText = await salesRes.text();
+      const lm = salesText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
+      if(!lm){ salesStatus = ` / 판매 탭("${salesSheetName}") 못 찾음`; }
+      else{
+        const salesJson = JSON.parse(lm[1]);
+        if(salesJson.table && salesJson.table.rows){
+          const lcols = salesJson.table.cols.map(c=>c.label);
+          const lidx = n => lcols.findIndex(c=>c && c.includes(n));
+          const iLDate=lidx('계약실행일'), iLName=lidx('차종'), iLGubun=lidx('신차구분');
+          if(iLDate<0 || iLName<0){
+            salesStatus = ` / 판매 탭에서 "계약실행일"·"차종" 컬럼을 못 찾음`;
+          } else {
+            salesRows = salesJson.table.rows.map(r=>{
+              const c=r.c;
+              const v = i => (i>=0 && c[i] && c[i].v!=null) ? c[i].v : '';
+              const d = parseYMD(v(iLDate));
+              return d ? { gubun:v(iLGubun), name:v(iLName), monthKey: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0') } : null;
+            }).filter(r=>r && r.name);
+            salesStatus = ` / 판매이력 ${salesRows.length}건${iLGubun<0 ? ' (신차구분 컬럼 없어 신차/재렌트 구분 없이 합산)' : ''}`;
+          }
+        } else {
+          salesStatus = ` / 판매 탭 데이터 없음`;
+        }
+      }
+    }catch(e){ salesStatus = ` / 판매이력 로드 오류(${e.message})`; }
+
+    shipStatus += salesStatus;
+    document.getElementById('lastUpdate').textContent = '마지막 업데이트: ' + new Date().toLocaleString('ko-KR');
+    setStatus(`불러오기 완료 (재고 ${rows.length}건 / 원본 ${raw.length}행)${shipStatus}`, false);
 
     render();
   }catch(e){
@@ -255,6 +303,30 @@ function getBusinessDays(){
   return {elapsed, total, pct: total? Math.round(elapsed/total*100) : 0};
 }
 
+function monthsAgoKey(n){
+  const d = new Date(TODAY.getFullYear(), TODAY.getMonth()-n, 1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function salesCountFor(gubunFilter, name, monthKey){
+  if(!salesRows) return 0;
+  return salesRows.filter(r=>{
+    if(r.name!==name) return false;
+    if(r.monthKey!==monthKey) return false;
+    if(r.gubun) return r.gubun===gubunFilter; // 신차구분 있으면 매칭, 없으면(공백) 전체 합산
+    return true;
+  }).length;
+}
+function recentAvg(gubunFilter, name, monthsBack){
+  let sum=0;
+  for(let i=1;i<=monthsBack;i++){ sum += salesCountFor(gubunFilter, name, monthsAgoKey(i)); }
+  return monthsBack>0 ? sum/monthsBack : 0;
+}
+function sameMonthLastYear(gubunFilter, name){
+  const d = new Date(TODAY.getFullYear()-1, TODAY.getMonth(), 1);
+  const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  return salesCountFor(gubunFilter, name, key);
+}
+
 function shipCount(gubunFilter, name){
   if(!shipRows) return null;
   return shipRows.filter(r=> r.gubun===gubunFilter && r.name===name).length;
@@ -263,12 +335,13 @@ function shipCount(gubunFilter, name){
 function groupByModel(arr){
   const map = {};
   arr.forEach(r=>{
-    if(!map[r.name]) map[r.name] = {name:r.name, total:0, long:0, mid:0, normal:0, items:[]};
+    if(!map[r.name]) map[r.name] = {name:r.name, total:0, long:0, mid:0, normal:0, prep:0, items:[]};
     const g = map[r.name];
     g.total++; g.items.push(r);
     if(r.grade==='장기') g.long++;
     else if(r.grade==='반장기') g.mid++;
     else if(r.grade==='정상') g.normal++;
+    else g.prep++; // 등급 미분류 = 상품준비/상품화진행중/상품화완료/구매준비중
   });
   return Object.values(map).sort((a,b)=>b.total-a.total);
 }
@@ -296,24 +369,43 @@ function detailHtml(items, colspan){
 
 function renderTable(models, openName, onClick, hasM, shipGubun){
   const showShip = !!shipRows;
+  const showSales = !!salesRows;
   const biz = showShip ? getBusinessDays() : null;
   const cols = hasM
     ? ['차종','총재고','장기','반장기','정상']
-    : ['차종','총재고','장기','정상'];
-  const colsWithShip = showShip ? [...cols, '이번달출고', '마감예상출고'] : cols;
+    : ['차종','총재고','장기','정상','상품화진행중'];
+  let colsWithShip = cols;
+  if(showShip) colsWithShip = [...colsWithShip, '이번달출고', '마감예상출고', '마감예상재고'];
+  if(showSales) colsWithShip = [...colsWithShip, '최근3개월평균', '작년동월'];
+  if(showShip) colsWithShip = [...colsWithShip, '익월대비 구매필요'];
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
     const cells = hasM
       ? `<td>${m.total}</td><td>${m.long}</td><td>${m.mid}</td><td>${m.normal}</td>`
-      : `<td>${m.total}</td><td>${m.long}</td><td>${m.normal}</td>`;
-    let shipCell = '';
+      : `<td>${m.total}</td><td>${m.long}</td><td>${m.normal}</td><td>${m.prep}</td>`;
+    let midCell = '', tailCell = '';
+    let projStock = null;
     if(showShip){
       const sc = shipCount(shipGubun, m.name);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
-      shipCell = `<td>${sc}</td><td style="font-weight:600;color:#6C63FF;">${proj}</td>`;
+      projStock = Math.max(0, m.total - proj);
+      midCell = `<td>${sc}</td><td style="font-weight:600;color:#6C63FF;">${proj}</td><td>${projStock}</td>`;
+    }
+    let expectedDemand = null;
+    if(showSales){
+      const avg3 = recentAvg(shipGubun, m.name, 3);
+      const lastYear = sameMonthLastYear(shipGubun, m.name);
+      expectedDemand = avg3;
+      midCell += `<td>${avg3.toFixed(1)}</td><td>${lastYear}</td>`;
+    }
+    if(showShip){
+      const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name)/biz.elapsed*biz.total : shipCount(shipGubun,m.name));
+      const buyNeed = Math.max(0, Math.round(basis - projStock));
+      const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;' : 'color:#999;';
+      tailCell = `<td style="${buyStyle}">${buyNeed}</td>`;
     }
     let html = `<tr class="model-row ${isOpen?'open':''}" onclick="${onClick}('${m.name.replace(/'/g,"\\'")}')">
-      <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}${shipCell}
+      <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}${midCell}${tailCell}
     </tr>`;
     if(isOpen){ html += detailHtml(m.items, colsWithShip.length); }
     return html;
@@ -340,7 +432,7 @@ function render(){
   let shipBadge = '';
   if(shipRows){
     const biz = getBusinessDays();
-    shipBadge = ` · 이번달 영업일 진척률 <b style="color:#6C63FF;">${biz.pct}%</b> (${biz.elapsed}일/${biz.total}일) — 마감예상출고는 현재 페이스 기준 단순 비례 추정`;
+    shipBadge = ` · 이번달 영업일 진척률 <b style="color:#6C63FF;">${biz.pct}%</b> (${biz.elapsed}일/${biz.total}일) — 마감예상출고는 현재 페이스 비례 추정, 익월대비 구매필요는 마감예상재고가 (판매이력 있으면 최근3개월평균, 없으면 이번달 페이스) 기준 예상수요에 못 미치는 만큼`;
   }
 
   content.innerHTML = `
