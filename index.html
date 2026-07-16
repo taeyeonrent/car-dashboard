@@ -520,6 +520,62 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
 }
 
 function setTargetCoverage(v){ targetCoverage = parseFloat(v)||1; render(); }
+function buildPurchaseNeedList(shinModels){
+  if(!shipRows) return [];
+  const biz = getBusinessDays();
+  const list = shinModels.map(m=>{
+    const sc = shipCount('신차', m.name);
+    const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
+    const projStock = Math.max(0, m.total - proj);
+    const avg3 = salesRows ? recentAvg('신차', m.name, 3) : (biz.elapsed>0 ? sc/biz.elapsed*biz.total : sc);
+    const buyNeed = Math.max(0, Math.round(avg3*targetCoverage - projStock));
+    // 유종별 배분: 현재 재고의 유종 구성 비율로 추정 배분
+    const fuelCounts = {};
+    m.items.forEach(it=>{ const f=it.fuel||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
+    const fuelAlloc = {};
+    if(buyNeed>0 && m.total>0){
+      Object.entries(fuelCounts).forEach(([f,cnt])=>{
+        const alloc = Math.round(buyNeed * cnt / m.total);
+        if(alloc>0) fuelAlloc[f]=alloc;
+      });
+    }
+    return {name:m.name, total:m.total, long:m.long, avg3, projStock, buyNeed, fuelAlloc};
+  }).filter(x=>x.buyNeed>0).sort((a,b)=>b.buyNeed-a.buyNeed);
+  return list;
+}
+
+function renderPurchaseNeedCard(shinModels){
+  if(!shipRows) return '';
+  const list = buildPurchaseNeedList(shinModels);
+  const totalNeed = list.reduce((a,b)=>a+b.buyNeed,0);
+  const rowsHtml = list.map(x=>{
+    const fuelStr = Object.entries(x.fuelAlloc).map(([f,n])=>`${f} <b style="color:#1c1c2e;">${n}</b>`).join(' · ');
+    return `<tr style="border-top:1px solid #f5f5fa;">
+      <td style="padding:8px 4px;font-weight:600;">${x.name}</td>
+      <td style="padding:8px 4px;text-align:center;">${x.total}</td>
+      <td style="padding:8px 4px;text-align:center;color:#e2483d;">${x.long}</td>
+      <td style="padding:8px 4px;text-align:center;">${x.avg3.toFixed(1)}</td>
+      <td style="padding:8px 4px;text-align:center;">${x.projStock}</td>
+      <td style="padding:8px 4px;text-align:center;"><span style="font-size:14.5px;font-weight:800;color:#e2483d;">+${x.buyNeed}</span></td>
+      <td style="padding:8px 4px;text-align:left;color:#555;">${fuelStr||'-'}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">🚨 구매필요차량 리스트 (신차)</div>
+        </div>
+        <div class="card-sub">구매필요 &gt; 0 전체 · ${list.length}개 차종 · ${totalNeed}대</div>
+      </div>
+      <table class="inv-table">
+        <thead><tr><th>차종</th><th>현재고</th><th>장기재고</th><th>최근3개월평균</th><th>마감예상재고</th><th>구매필요(총)</th><th style="text-align:left;">유종별 필요대수</th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#aaa;padding:16px;">구매가 필요한 차종이 없어요 🎉</td></tr>`}</tbody>
+      </table>
+      <div style="font-size:11px;color:#999;margin-top:8px;">기준: 마감예상재고 &lt; 최근3개월평균 × 목표커버리지(${targetCoverage}개월) · 유종별 필요대수는 현재고 유종비율로 추정 배분</div>
+    </div>`;
+}
+
 function toggleShin(name){ openShin = (openShin===name)? null : name; render(); }
 function toggleReja(name){ openReja = (openReja===name)? null : name; render(); }
 function setRejaMode(mode){ rejaMode = mode; openReja = null; render(); }
@@ -537,6 +593,28 @@ function render(){
   if(shipRows){
     const biz = getBusinessDays();
     shipBadge = ` · 이번달 영업일 진척률 <b style="color:#6C63FF;">${biz.pct}%</b> (${biz.elapsed}일/${biz.total}일) — 마감예상출고는 현재 페이스 비례 추정, 익월대비 구매필요는 마감예상재고가 (판매이력 있으면 최근3개월평균, 없으면 이번달 페이스) 기준 예상수요에 못 미치는 만큼`;
+  }
+
+  let shipSummaryCard = '';
+  if(shipRows){
+    const biz = getBusinessDays();
+    const shinShip = shipRows.filter(r=>r.gubun==='신차').length;
+    const rejaShip = shipRows.filter(r=>r.gubun==='재렌트').length;
+    const totalShip = shinShip + rejaShip;
+    const projOf = n => biz.elapsed>0 ? Math.round(n/biz.elapsed*biz.total) : n;
+    shipSummaryCard = `
+    <div class="summary-row" style="grid-template-columns:1fr 1fr;">
+      <div class="sum-card">
+        <div class="sum-label">이번달 출고 (현재)</div>
+        <div class="sum-value">${totalShip.toLocaleString()}<span class="sum-unit">대</span></div>
+        <div class="split-sub">신차 ${shinShip} &nbsp;/&nbsp; 재렌트 ${rejaShip}</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-label">마감 예상 출고</div>
+        <div class="sum-value" style="color:#6C63FF;">${projOf(totalShip).toLocaleString()}<span class="sum-unit">대</span></div>
+        <div class="split-sub">신차 ${projOf(shinShip)} &nbsp;/&nbsp; 재렌트 ${projOf(rejaShip)}</div>
+      </div>
+    </div>`;
   }
 
   content.innerHTML = `
@@ -558,6 +636,8 @@ function render(){
         </div>
       </div>
     </div>
+    ${shipSummaryCard}
+    ${renderPurchaseNeedCard(groupByModel(shin))}
 
     <div class="card">
       <div class="card-header">
