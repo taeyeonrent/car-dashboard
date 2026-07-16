@@ -119,9 +119,14 @@ const REJU_SET   = new Set(["구매준비중","상품준비","상품화진행중
 
 function parseYMD(s){
   if(!s) return null;
-  const m = String(s).match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
-  if(!m) return null;
-  return new Date(parseInt(m[1]), parseInt(m[2])-1, parseInt(m[3]));
+  const str = String(s);
+  // 구글 gviz가 진짜 날짜형 셀을 "Date(2026,6,8)" 식으로 반환하는 경우 (월은 이미 0-indexed)
+  let m = str.match(/Date\((\d+),\s*(\d+),\s*(\d+)/);
+  if(m) return new Date(parseInt(m[1]), parseInt(m[2]), parseInt(m[3]));
+  // "2026/07/08", "2026-07-08", "2026.07.08" 같은 텍스트 날짜
+  m = str.match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if(m) return new Date(parseInt(m[1]), parseInt(m[2])-1, parseInt(m[3]));
+  return null;
 }
 function daysSince(d){ return Math.round((TODAY - d) / 86400000); }
 
@@ -129,6 +134,7 @@ let rows = null; // classified: {gubun, name, grade, year, fuel}
 let shipRows = null; // {gubun, name} from 탁송데이터
 let salesRows = null; // {gubun, name, monthKey} from 판매현황테스트 (계약실행일 기준)
 let assetBuyMap = {}; // 자산번호 -> 매입구분(자사매입/중고매입), 차량 RAW DATA에서 구축
+let targetCoverage = 1; // 구매필요대수 계산 시 목표 커버리지(개월)
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
 
@@ -236,11 +242,12 @@ async function loadAll(){
             const beforeFilter = allShipRows.length;
             let filtered = allShipRows;
             if(iSHopeDate>=0 || iSReqDate>=0){
+              const unparsed = allShipRows.filter(r=> !parseYMD(r.hopeDate) && !parseYMD(r.reqDate)).length;
               filtered = allShipRows.filter(r=>{
                 const d = parseYMD(r.hopeDate) || parseYMD(r.reqDate);
                 return d && d.getFullYear()===TODAY.getFullYear() && d.getMonth()===TODAY.getMonth();
               });
-              filterNote = `희망일자(DATEVALUE) 기준 ${TODAY.getFullYear()}년 ${curMonthNum}월로 필터링`;
+              filterNote = `희망일자(DATEVALUE) 기준 ${TODAY.getFullYear()}년 ${curMonthNum}월로 필터링${unparsed?`, 날짜 파싱 실패 ${unparsed}건`:''}`;
             } else if(iSMonth>=0){
               filtered = allShipRows.filter(r=>{
                 const mv = String(r.month).trim();
@@ -256,7 +263,10 @@ async function loadAll(){
               filterNote += ` → 필터 결과 0건이라 필터 없이 전체 표시함(월 컬럼 형식을 확인해줘)`;
             }
             shipRows = filtered;
-            shipStatus = ` / 이번달출고 ${shipRows.length}건(원본 ${beforeFilter}건, ${filterNote})`;
+            const rejaShip = shipRows.filter(r=>r.gubun==='재렌트');
+            const rejaMatched = rejaShip.filter(r=>assetBuyMap[String(r.asset)]).length;
+            const matchNote = rejaShip.length ? `, 재렌트 중 매입구분 매칭 ${rejaMatched}/${rejaShip.length}건` : '';
+            shipStatus = ` / 이번달출고 ${shipRows.length}건(원본 ${beforeFilter}건, ${filterNote}${matchNote})`;
           }
         } else {
           shipStatus = ` / 탁송 탭 데이터 없음`;
@@ -487,10 +497,15 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
       expectedDemand = recentAvg(shipGubun, m.name, 3);
     }
     if(showShip && hasM){
-      const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name,buyFilter)/biz.elapsed*biz.total : shipCount(shipGubun,m.name,buyFilter));
-      const buyNeed = Math.max(0, Math.round(basis - projStock));
-      const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
-      tailCell = `<td style="${buyStyle}">${buyNeed>0?'+':''}${buyNeed}</td>`;
+      try{
+        const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name,buyFilter)/biz.elapsed*biz.total : shipCount(shipGubun,m.name,buyFilter));
+        const buyNeed = Math.max(0, Math.round(basis*targetCoverage - projStock));
+        const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
+        tailCell = `<td style="${buyStyle}">${buyNeed>0?'+':''}${buyNeed}</td>`;
+      }catch(e){
+        console.error('구매필요대수 계산 오류:', m.name, e);
+        tailCell = `<td style="color:#ccc;">-</td>`;
+      }
     }
     let html = `<tr class="model-row ${isOpen?'open':''}" onclick="${onClick}('${m.name.replace(/'/g,"\\'")}')">
       <td>${m.name}${isOpen?' ▾':' ▸'}</td>${cells}${midCell}${tailCell}
@@ -504,6 +519,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   </table>`;
 }
 
+function setTargetCoverage(v){ targetCoverage = parseFloat(v)||1; render(); }
 function toggleShin(name){ openShin = (openShin===name)? null : name; render(); }
 function toggleReja(name){ openReja = (openReja===name)? null : name; render(); }
 function setRejaMode(mode){ rejaMode = mode; openReja = null; render(); }
@@ -544,10 +560,18 @@ function render(){
     </div>
 
     <div class="card">
-      <div class="card-header"><div>
-        <div class="card-title">신차 상세</div>
-        <div class="card-sub">매입계약일 기준 · D+60↑ 장기 · D+30~59 반장기 · D+29↓ 정상${shipBadge}</div>
-      </div></div>
+      <div class="card-header">
+        <div>
+          <div class="card-title">신차 상세</div>
+          <div class="card-sub">매입계약일 기준 · D+60↑ 장기 · D+30~59 반장기 · D+29↓ 정상${shipBadge}</div>
+        </div>
+        ${shipRows ? `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#888;">
+          구매필요 목표 커버리지
+          <input type="number" step="0.5" min="0.5" value="${targetCoverage}" onchange="setTargetCoverage(this.value)"
+            style="width:52px;padding:5px 7px;border:1.5px solid #e8e8f0;border-radius:6px;font-family:inherit;text-align:center;"/>
+          개월
+        </div>` : ''}
+      </div>
       ${renderTable(groupByModel(shin), openShin, 'toggleShin', true, '신차')}
     </div>
 
