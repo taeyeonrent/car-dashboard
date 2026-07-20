@@ -581,7 +581,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter, tabl
     models.forEach(m=>{
       const sc = shipCount(shipGubun, m.name, buyFilter);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
-      const projStock = Math.max(0, m.total - proj);
+      const projStock = Math.max(0, m.total - (proj - sc));
       m._sc = sc; m._proj = proj; m._projStock = projStock;
       if(hasM){
         try{
@@ -657,13 +657,13 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter, tabl
         return true;
       }).length;
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
-      const projStock = Math.max(0, t.total - proj);
+      const projStock = Math.max(0, t.total - (proj - sc));
       tMid = `<td style="border-left:1.5px solid #f5f5fa;">${sc}</td><td style="font-weight:700;color:#6C63FF;">${proj}</td><td class="emph" style="border-left:1.5px solid #f5f5fa;">${projStock}</td>`;
       if(hasM){
         const need = models.reduce((a,m)=>{
           const msc = shipCount(shipGubun, m.name, buyFilter);
           const mproj = (biz.elapsed>0) ? Math.round(msc/biz.elapsed*biz.total) : msc;
-          const mProjStock = Math.max(0, m.total - mproj);
+          const mProjStock = Math.max(0, m.total - (mproj - msc));
           const basis = showSales ? (recentAvg(shipGubun,m.name,3)||( biz.elapsed>0?msc/biz.elapsed*biz.total:msc)) : (biz.elapsed>0?msc/biz.elapsed*biz.total:msc);
           return a + Math.max(0, Math.round(basis*targetCoverage - mProjStock));
         }, 0);
@@ -702,7 +702,7 @@ function buildPurchaseNeedList(shinModels){
   const list = shinModels.map(m=>{
     const sc = shipCount('신차', m.name);
     const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
-    const projStock = Math.max(0, m.total - proj);
+    const projStock = Math.max(0, m.total - (proj - sc));
     const paceBasis = biz.elapsed>0 ? sc/biz.elapsed*biz.total : sc;
     let avg3 = salesRows ? recentAvg('신차', m.name, 3) : paceBasis;
     if(!avg3) avg3 = paceBasis; // 판매이력 평균이 0이면(매칭 실패 등) 이번달 출고 페이스로 대체
