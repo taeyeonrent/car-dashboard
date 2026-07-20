@@ -140,6 +140,7 @@ let targetCoverage = 1; // 구매필요대수 계산 시 목표 커버리지(개
 let showPurchaseModal = false;
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
+let tableSort = { shin:{key:null, dir:'desc'}, reja:{key:null, dir:'desc'} };
 
 function setStatus(msg, isErr){
   const el = document.getElementById('statusMsg');
@@ -562,7 +563,7 @@ function gradeCell(items, grade, value, color){
   </td>`;
 }
 
-function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
+function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter, tableId){
   const showShip = !!shipRows;
   const showSales = !!salesRows;
   const biz = showShip ? getBusinessDays() : null;
@@ -573,6 +574,34 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   if(showShip) colsWithShip = [...colsWithShip, '당월출고', '예상출고', '마감예상재고'];
   if(showShip && hasM) colsWithShip = [...colsWithShip, '구매필요대수'];
 
+  const colKeyMap = {'총재고':'total','장기':'long','반장기':'mid','정상':'normal','상품화진행중':'prep','당월출고':'_sc','예상출고':'_proj','마감예상재고':'_projStock','구매필요대수':'_buyNeed'};
+
+  // 정렬용 필드 사전 계산
+  if(showShip){
+    models.forEach(m=>{
+      const sc = shipCount(shipGubun, m.name, buyFilter);
+      const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
+      const projStock = Math.max(0, m.total - proj);
+      m._sc = sc; m._proj = proj; m._projStock = projStock;
+      if(hasM){
+        try{
+          const expectedDemand = showSales ? (recentAvg(shipGubun, m.name, 3) || null) : null;
+          const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? sc/biz.elapsed*biz.total : sc);
+          m._buyNeed = Math.max(0, Math.round(basis*targetCoverage - projStock));
+        }catch(e){ m._buyNeed = 0; }
+      }
+    });
+  }
+
+  const sortState = tableId ? tableSort[tableId] : null;
+  if(sortState && sortState.key){
+    const key = colKeyMap[sortState.key];
+    models = [...models].sort((a,b)=>{
+      const av = a[key]||0, bv = b[key]||0;
+      return sortState.dir==='desc' ? bv-av : av-bv;
+    });
+  }
+
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
     const cells = hasM
@@ -581,40 +610,29 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
     let midCell = '', tailCell = '';
     let projStock = null;
     if(showShip){
-      const sc = shipCount(shipGubun, m.name, buyFilter);
-      const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
-      projStock = Math.max(0, m.total - proj);
+      const sc = m._sc, proj = m._proj;
+      projStock = m._projStock;
       midCell = `<td style="border-left:1.5px solid #f5f5fa;">${sc}</td><td style="font-weight:700;color:#6C63FF;">${proj}</td><td class="emph" style="border-left:1.5px solid #f5f5fa;">${projStock}</td>`;
     }
-    let expectedDemand = null;
-    if(showSales){
-      expectedDemand = recentAvg(shipGubun, m.name, 3) || null; // 0이면 null 처리해서 페이스 폴백 타도록
-    }
     if(showShip && hasM){
-      try{
-        const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name,buyFilter)/biz.elapsed*biz.total : shipCount(shipGubun,m.name,buyFilter));
-        const buyNeed = Math.max(0, Math.round(basis*targetCoverage - projStock));
-        const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
-        if(buyNeed>0){
-          const fuelCounts = {};
-          m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
-          const lines = Object.entries(fuelCounts).map(([f,cnt])=>{
-            const alloc = Math.round(buyNeed*cnt/m.total);
-            return alloc>0 ? `<div>${f} <b>${alloc}</b></div>` : '';
-          }).join('');
-          tailCell = `<td style="position:relative;">
-            <span class="tt-wrap" style="border-bottom:1.5px dotted #e2483d;${buyStyle}cursor:pointer;">+${buyNeed}
-              <div class="tt-popup" style="display:none;position:absolute;top:26px;left:50%;transform:translateX(-50%);background:#1c1c2e;color:#fff;border-radius:8px;padding:9px 12px;font-size:11px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.18);z-index:20;text-align:left;">
-                ${lines || '<div>유종 정보 없음</div>'}
-              </div>
-            </span>
-          </td>`;
-        } else {
-          tailCell = `<td style="${buyStyle}">${buyNeed}</td>`;
-        }
-      }catch(e){
-        console.error('구매필요대수 계산 오류:', m.name, e);
-        tailCell = `<td style="color:#ccc;">-</td>`;
+      const buyNeed = m._buyNeed || 0;
+      const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
+      if(buyNeed>0){
+        const fuelCounts = {};
+        m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
+        const lines = Object.entries(fuelCounts).map(([f,cnt])=>{
+          const alloc = Math.round(buyNeed*cnt/m.total);
+          return alloc>0 ? `<div>${f} <b>${alloc}</b></div>` : '';
+        }).join('');
+        tailCell = `<td style="position:relative;">
+          <span class="tt-wrap" style="border-bottom:1.5px dotted #e2483d;${buyStyle}cursor:pointer;">+${buyNeed}
+            <div class="tt-popup" style="display:none;position:absolute;top:26px;left:50%;transform:translateX(-50%);background:#1c1c2e;color:#fff;border-radius:8px;padding:9px 12px;font-size:11px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.18);z-index:20;text-align:left;">
+              ${lines || '<div>유종 정보 없음</div>'}
+            </div>
+          </span>
+        </td>`;
+      } else {
+        tailCell = `<td style="${buyStyle}">${buyNeed}</td>`;
       }
     }
     let html = `<tr class="model-row ${isOpen?'open':''}" onclick="${onClick}('${m.name.replace(/'/g,"\\'")}')">
@@ -658,10 +676,23 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   return `<table class="inv-table">
     <thead><tr>${colsWithShip.map((c,i)=>{
       const divider = (showShip && (i===cols.length || i===cols.length+2)) ? 'border-left:1.5px solid #eee;' : '';
-      return `<th style="${divider}">${c}</th>`;
+      if(c==='차종' || !tableId){
+        return `<th style="${divider}">${c}</th>`;
+      }
+      const active = sortState && sortState.key===c;
+      const arrow = active ? (sortState.dir==='desc'?' ▼':' ▲') : '';
+      const color = active ? 'color:#6C63FF;' : '';
+      return `<th style="${divider}cursor:pointer;${color}" onclick="setSort('${tableId}','${c}')">${c}${arrow}</th>`;
     }).join('')}</tr></thead>
     <tbody>${totalRowHtml}${rowsHtml || `<tr><td colspan="${colsWithShip.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
   </table>`;
+}
+
+function setSort(tableId, colLabel){
+  const s = tableSort[tableId];
+  if(s.key===colLabel){ s.dir = s.dir==='desc'?'asc':'desc'; }
+  else { s.key = colLabel; s.dir='desc'; }
+  render();
 }
 
 function setTargetCoverage(v){ targetCoverage = parseFloat(v)||1; render(); }
@@ -826,7 +857,7 @@ function render(){
         </div>
         ${renderPurchaseNeedButton(groupByModel(shin))}
       </div>
-      ${renderTable(groupByModel(shin), openShin, 'toggleShin', true, '신차')}
+      ${renderTable(groupByModel(shin), openShin, 'toggleShin', true, '신차', undefined, 'shin')}
     </div>
 
     <div class="card">
@@ -840,7 +871,7 @@ function render(){
           <button class="seg-btn ${rejaMode==='중고매입'?'active':''}" onclick="setRejaMode('중고매입')" style="${rejaMode==='중고매입'?'color:#f5a623;':''}">중고매입</button>
         </div>
       </div>
-      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트', rejaMode)}
+      ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트', rejaMode, 'reja')}
     </div>
     ${renderPurchaseNeedModal(groupByModel(shin))}
   `;
