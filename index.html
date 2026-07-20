@@ -137,6 +137,7 @@ let shipRows = null; // {gubun, name} from 탁송데이터
 let salesRows = null; // {gubun, name, monthKey} from 판매현황테스트 (계약실행일 기준)
 let assetBuyMap = {}; // 자산번호 -> 매입구분(자사매입/중고매입), 차량 RAW DATA에서 구축
 let targetCoverage = 1; // 구매필요대수 계산 시 목표 커버리지(개월)
+let showPurchaseModal = false;
 let rejaMode = '자사매입';
 let openShin = null, openReja = null;
 
@@ -429,28 +430,55 @@ function breakdown(items){
   return {byYear, fuels: Array.from(fuelSet)};
 }
 
-function detailHtml(m, colspan, shipGubun, showSales, hasM){
-  const {byYear, fuels} = breakdown(m.items);
-  const years = Object.keys(byYear).sort();
-  const pivotRows = years.map(y=>{
-    const data = byYear[y];
-    const cells = fuels.map(f=>{
-      const v = data[f]||0;
-      return `<td class="${v===0?'zero':''}">${v===0?'-':v}</td>`;
-    }).join('');
-    return `<tr><td>${y}</td>${cells}<td class="total-col">${data.__total}</td></tr>`;
-  }).join('');
-  const pivotTable = years.length ? `
-    <table class="pivot-table">
-      <thead><tr><th>년형</th>${fuels.map(f=>`<th>${f}</th>`).join('')}<th class="total-col">계</th></tr></thead>
-      <tbody>${pivotRows}</tbody>
-    </table>` : '<span style="color:#bbb;font-size:12.5px;">년형 정보 없음</span>';
+function heatColor(v, max){
+  if(!v || !max) return '#fff';
+  const t = Math.min(1, v/max);
+  // 흰색(#fff) -> 진한 빨강(#e2483d) 보간, 텍스트 대비용으로 옅은 쪽만 사용
+  const r1=255,g1=255,b1=255, r2=249,g2=200,b2=196;
+  const r=Math.round(r1+(r2-r1)*t), g=Math.round(g1+(g2-g1)*t), b=Math.round(b1+(b2-b1)*t);
+  return `rgb(${r},${g},${b})`;
+}
 
-  const gradeParts = [`장기 <b>${m.long}</b>`];
-  if(hasM) gradeParts.push(`반장기 <b>${m.mid}</b>`);
-  gradeParts.push(`정상 <b>${m.normal}</b>`);
-  if(!hasM) gradeParts.push(`상품화진행중 <b>${m.prep}</b>`);
-  const gradeLine = gradeParts.join(' · ');
+function detailHtml(m, colspan, shipGubun, showSales, hasM){
+  const grades = hasM ? ['장기','반장기','정상'] : ['장기','정상'];
+  const gradeColor = {'장기':'#e2483d','반장기':'#d98a10','정상':'#1aab73'};
+
+  // 유종별 총계 (전체, 등급 무관)
+  const fuelTotals = {};
+  m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelTotals[f]=(fuelTotals[f]||0)+1; });
+  const fuelTotalLine = Object.entries(fuelTotals).map(([f,n])=>`<span style="font-size:12px;color:#555;">${f} <b style="color:#1c1c2e;">${n}</b></span>`).join('');
+
+  // 매트릭스: 세로=유종, 가로 그룹=년형, 각 그룹 안에 등급별 서브컬럼
+  const years = Array.from(new Set(m.items.map(it=>it.year||'년형미상'))).sort();
+  const fuels = Object.keys(fuelTotals).sort();
+  const matrix = {}; // matrix[fuel][year][grade] = count
+  m.items.forEach(it=>{
+    const f = fuelLabel(it.fuel)||'유종미상';
+    const y = it.year||'년형미상';
+    const g = it.grade || (hasM ? '' : '상품화진행중');
+    if(!matrix[f]) matrix[f]={};
+    if(!matrix[f][y]) matrix[f][y]={};
+    matrix[f][y][g] = (matrix[f][y][g]||0)+1;
+  });
+  let maxLong = 0;
+  fuels.forEach(f=>years.forEach(y=>{ const v=(matrix[f]&&matrix[f][y]&&matrix[f][y]['장기'])||0; if(v>maxLong) maxLong=v; }));
+
+  const matrixTable = (years.length && fuels.length) ? `
+    <table class="pivot-table">
+      <thead>
+        <tr><th>유종</th>${years.map(y=>`<th colspan="${grades.length}" class="total-col">${y}년형</th>`).join('')}</tr>
+        <tr><th></th>${years.map(()=>grades.map(g=>`<th style="color:${gradeColor[g]};font-size:11px;" class="${g==='장기'?'total-col':''}">${g}</th>`).join('')).join('')}</tr>
+      </thead>
+      <tbody>
+        ${fuels.map(f=>`<tr><td>${f}</td>${years.map(y=>grades.map(g=>{
+          const v = (matrix[f]&&matrix[f][y]&&matrix[f][y][g])||0;
+          const isLong = g==='장기';
+          const bg = isLong ? heatColor(v, maxLong) : '#fff';
+          const cls = isLong ? 'total-col' : '';
+          return `<td class="${cls} ${v===0?'zero':''}" style="background:${bg};${v>0&&isLong?'font-weight:700;color:#7a1c14;':''}">${v===0?'-':v}</td>`;
+        }).join('')).join('')}</tr>`).join('')}
+      </tbody>
+    </table>` : '<span style="color:#bbb;font-size:12.5px;">년형 정보 없음</span>';
 
   let salesLine = '';
   if(showSales){
@@ -458,13 +486,25 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
     const lastYear = sameMonthLastYear(shipGubun, m.name);
     salesLine = `<div style="font-size:12.5px;color:#888;margin-top:12px;">최근3개월평균 <b style="color:#1c1c2e;">${avg3}</b> · 작년동월 <b style="color:#1c1c2e;">${lastYear}</b></div>`;
   }
+  const prepLine = !hasM ? `<div style="font-size:11.5px;color:#888;margin-top:8px;">상품화진행중 <b style="color:#1c1c2e;">${m.prep}</b>대는 매트릭스에서 별도 등급 취급(위 표에 포함 안 됨)</div>` : '';
+
+  const gradeCards = grades.map(g=>{
+    const val = g==='장기'?m.long : g==='반장기'?m.mid : m.normal;
+    const bg = g==='장기'?'#fff8f8':g==='반장기'?'#fffaf0':'#f0fbf6';
+    return `<div style="background:${bg};border-radius:8px;padding:9px 12px;flex:1;">
+      <div style="font-size:10.5px;color:${gradeColor[g]};font-weight:600;">${g}재고</div>
+      <div style="font-size:17px;font-weight:800;color:${gradeColor[g]};margin-top:2px;">${val}<span style="font-size:10px;font-weight:500;">대</span></div>
+    </div>`;
+  }).join('');
 
   return `<tr><td colspan="${colspan}" class="detail-cell">
     <div class="detail-box">
-      <div class="detail-label">재고 등급</div>
-      <div style="font-size:12.5px;color:#555;margin-bottom:14px;">${gradeLine}</div>
-      <div class="detail-label">년형별 유종 구성</div>
-      ${pivotTable}
+      <div style="display:flex;gap:8px;margin-bottom:12px;">${gradeCards}</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;background:#fafafc;border-radius:8px;margin-bottom:12px;">
+        <span style="font-size:10.5px;color:#999;">유종별 총계</span>${fuelTotalLine}
+      </div>
+      ${matrixTable}
+      ${prepLine}
       ${salesLine}
     </div>
   </td></tr>`;
@@ -528,7 +568,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
     }
     let expectedDemand = null;
     if(showSales){
-      expectedDemand = recentAvg(shipGubun, m.name, 3);
+      expectedDemand = recentAvg(shipGubun, m.name, 3) || null; // 0이면 null 처리해서 페이스 폴백 타도록
     }
     if(showShip && hasM){
       try{
@@ -627,8 +667,17 @@ function buildPurchaseNeedList(shinModels){
   return list;
 }
 
-function renderPurchaseNeedCard(shinModels){
+function renderPurchaseNeedButton(shinModels){
   if(!shipRows) return '';
+  const list = buildPurchaseNeedList(shinModels);
+  const totalNeed = list.reduce((a,b)=>a+b.buyNeed,0);
+  return `<button onclick="togglePurchaseModal()" style="display:flex;align-items:center;gap:6px;padding:7px 14px;border:1.5px solid #ffd9d9;border-radius:8px;background:#fff8f8;font-family:inherit;font-size:12px;font-weight:700;color:#e2483d;cursor:pointer;white-space:nowrap;">
+    🚨 구매필요 리스트 <span style="font-weight:500;color:#999;">${list.length}개·${totalNeed}대</span>
+  </button>`;
+}
+
+function renderPurchaseNeedModal(shinModels){
+  if(!shipRows || !showPurchaseModal) return '';
   const list = buildPurchaseNeedList(shinModels);
   const totalNeed = list.reduce((a,b)=>a+b.buyNeed,0);
   const shinSalesCount = salesRows ? salesRows.filter(r=>!r.gubun || r.gubun==='신차').length : 0;
@@ -645,21 +694,29 @@ function renderPurchaseNeedCard(shinModels){
       <td style="padding:8px 4px;text-align:left;color:#555;">${fuelStr||'-'}</td>
     </tr>`;
   }).join('');
-  return `
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <div class="card-title">🚨 구매필요차량 리스트 (신차)</div>
-        </div>
-        <div class="card-sub">구매필요 &gt; 0 전체 · ${list.length}개 차종 · ${totalNeed}대</div>
+  return `<div onclick="if(event.target===this)togglePurchaseModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:100;">
+    <div style="background:#fff;border-radius:14px;padding:20px;width:100%;max-width:720px;max-height:80vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.25);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <div style="font-size:15px;font-weight:700;color:#1c1c2e;">🚨 구매필요차량 리스트 (신차)</div>
+        <div onclick="togglePurchaseModal()" style="width:26px;height:26px;border-radius:50%;background:#f5f5f7;display:flex;align-items:center;justify-content:center;color:#888;font-size:13px;cursor:pointer;">✕</div>
+      </div>
+      <div style="font-size:11px;color:#999;margin-bottom:12px;">구매필요 &gt; 0 전체 · ${list.length}개 차종 · ${totalNeed}대</div>
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fafafc;border-radius:8px;margin-bottom:12px;">
+        <span style="font-size:11px;color:#888;">목표 커버리지</span>
+        <input type="number" step="0.5" min="0.5" value="${targetCoverage}" onchange="setTargetCoverage(this.value)"
+          style="width:60px;padding:6px 8px;border:1.5px solid #e8e8f0;border-radius:6px;font-family:inherit;text-align:center;"/>
+        <span style="font-size:11px;color:#888;">개월</span>
       </div>
       <table class="inv-table">
         <thead><tr><th>차종</th><th>현재고</th><th>장기재고</th><th>최근3개월평균</th><th>마감예상재고</th><th>구매필요(총)</th><th style="text-align:left;">유종별 필요대수</th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#aaa;padding:16px;">구매가 필요한 차종이 없어요 🎉</td></tr>`}</tbody>
       </table>
       <div style="font-size:11px;color:#999;margin-top:8px;">기준: 마감예상재고 &lt; 최근3개월평균 × 목표커버리지(${targetCoverage}개월) · 유종별 필요대수는 현재고 유종비율로 추정 배분 · ${salesNote}</div>
-    </div>`;
+    </div>
+  </div>`;
 }
+
+function togglePurchaseModal(){ showPurchaseModal = !showPurchaseModal; render(); }
 
 function toggleShin(name){ openShin = (openShin===name)? null : name; render(); }
 function toggleReja(name){ openReja = (openReja===name)? null : name; render(); }
@@ -728,7 +785,6 @@ function render(){
       </div>
     </div>
     ${shipSummaryCard}
-    ${renderPurchaseNeedCard(groupByModel(shin))}
 
     <div class="card">
       <div class="card-header">
@@ -736,12 +792,7 @@ function render(){
           <div class="card-title">신차 상세</div>
           <div class="card-sub">매입계약일 기준 · D+60↑ 장기 · D+30~59 반장기 · D+29↓ 정상${shipBadge}</div>
         </div>
-        ${shipRows ? `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#888;">
-          구매필요 목표 커버리지
-          <input type="number" step="0.5" min="0.5" value="${targetCoverage}" onchange="setTargetCoverage(this.value)"
-            style="width:52px;padding:5px 7px;border:1.5px solid #e8e8f0;border-radius:6px;font-family:inherit;text-align:center;"/>
-          개월
-        </div>` : ''}
+        ${renderPurchaseNeedButton(groupByModel(shin))}
       </div>
       ${renderTable(groupByModel(shin), openShin, 'toggleShin', true, '신차')}
     </div>
@@ -759,6 +810,7 @@ function render(){
       </div>
       ${renderTable(groupByModel(rejaCurrent), openReja, 'toggleReja', false, '재렌트', rejaMode)}
     </div>
+    ${renderPurchaseNeedModal(groupByModel(shin))}
   `;
 }
 </script>
