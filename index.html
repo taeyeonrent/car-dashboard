@@ -432,13 +432,15 @@ function breakdown(items){
 }
 
 function detailHtml(m, colspan, shipGubun, showSales, hasM){
-  const grades = hasM ? ['장기','반장기','정상'] : ['장기','정상'];
-  const gradeColor = {'장기':'#e2483d','반장기':'#FFA500','정상':'#22c997'};
-  const gradeBg = {'장기':'#fff5f4','반장기':'#fff8ec','정상':'#f0fbf6'};
-  const gradeBorder = {'장기':'#ffd2ce','반장기':'#ffe0b0','정상':'#c8f0dd'};
+  // 신차: 장기-반장기-정상 / 재렌트: 장기-정상-상품화진행중 순서로 표시
+  const grades = hasM ? ['장기','반장기','정상'] : ['장기','정상','상품화진행중'];
+  const gradeColor = {'장기':'#e2483d','반장기':'#FFA500','정상':'#22c997','상품화진행중':'#999'};
+  const gradeBg = {'장기':'#fff5f4','반장기':'#fff8ec','정상':'#f0fbf6','상품화진행중':'#f5f5f5'};
+  const gradeBorder = {'장기':'#ffd2ce','반장기':'#ffe0b0','정상':'#c8f0dd','상품화진행중':'#bbb'};
+  const gradeBorderStyle = {'장기':'solid','반장기':'solid','정상':'solid','상품화진행중':'dashed'};
 
   const total = m.total || 0;
-  const gradeVals = {'장기':m.long, '반장기':hasM?m.mid:0, '정상':m.normal};
+  const gradeVals = {'장기':m.long, '반장기':hasM?m.mid:0, '정상':m.normal, '상품화진행중':hasM?0:m.prep};
 
   // 도넛: stroke-dasharray 누적 계산 (원둘레 100 기준)
   let offset = 0;
@@ -454,7 +456,7 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
     const v = gradeVals[g];
     const pct = total ? Math.round(v/total*100) : 0;
     return `<div style="display:flex;justify-content:space-between;align-items:center;">
-      <span style="font-size:13px;color:#333;"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gradeColor[g]};margin-right:8px;"></span>${g}재고</span>
+      <span style="font-size:13px;color:#333;"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gradeColor[g]};margin-right:8px;"></span>${g}${g==='상품화진행중'?'':'재고'}</span>
       <span style="font-size:12px;color:#333;">${v}대 · <b>${pct}%</b></span>
     </div>`;
   }).join('');
@@ -464,15 +466,17 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
   m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelTotals[f]=(fuelTotals[f]||0)+1; });
   const fuelTotalLine = Object.entries(fuelTotals).map(([f,n])=>`<span style="font-size:12px;color:#555;">${f} <b style="color:#1c1c2e;">${n}</b></span>`).join('');
 
-  // 년형별 칩: 등급이 있는(장기/반장기/정상) 항목만, 년형별로 그룹핑
+  // 년형별 칩: 표시 대상 등급(장기/반장기/정상/[재렌트는 상품화진행중도]) 전부 포함, 실제 년형 기준으로 그룹핑
   const gradeSet = new Set(grades);
+  const items = m.items.map(it=>({...it, grade: it.grade || (hasM?it.grade:'상품화진행중')}));
   const byYear = {};
-  m.items.filter(it=>gradeSet.has(it.grade)).forEach(it=>{
+  items.filter(it=>gradeSet.has(it.grade)).forEach(it=>{
     const y = it.year || '년형미상';
     if(!byYear[y]) byYear[y] = [];
     byYear[y].push(it);
   });
   const years = Object.keys(byYear).sort();
+  const gradeOrder = grades; // 위에서 정의한 순서 그대로 칩 정렬에 사용
   const chipSections = years.map(y=>{
     const byFuelGrade = {};
     byYear[y].forEach(it=>{
@@ -480,12 +484,16 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
       const key = f+'|'+it.grade;
       byFuelGrade[key] = (byFuelGrade[key]||0)+1;
     });
-    const chips = Object.entries(byFuelGrade).map(([key,n])=>{
+    const entries = Object.entries(byFuelGrade).sort((a,b)=>{
+      const ga = a[0].split('|')[1], gb = b[0].split('|')[1];
+      return gradeOrder.indexOf(ga) - gradeOrder.indexOf(gb);
+    });
+    const chips = entries.map(([key,n])=>{
       const [f,g] = key.split('|');
-      return `<div style="display:flex;align-items:center;gap:6px;background:${gradeBg[g]};border:1px solid ${gradeBorder[g]};border-radius:20px;padding:7px 14px;">
+      return `<div style="display:flex;align-items:center;gap:6px;background:${gradeBg[g]};border:1px ${gradeBorderStyle[g]} ${gradeBorder[g]};border-radius:20px;padding:7px 14px;">
         <span style="width:7px;height:7px;border-radius:50%;background:${gradeColor[g]};"></span>
         <span style="font-size:12px;color:#555;">${f}</span>
-        <span style="font-size:13px;font-weight:800;color:${gradeColor[g]};">${n}대</span>
+        <span style="font-size:13px;font-weight:800;color:${g==='상품화진행중'?'#666':gradeColor[g]};">${n}대</span>
       </div>`;
     }).join('');
     return `<div style="margin-bottom:10px;">
@@ -500,7 +508,6 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
     const lastYear = sameMonthLastYear(shipGubun, m.name);
     salesLine = `<div style="font-size:12.5px;color:#888;margin-top:12px;">최근3개월평균 <b style="color:#1c1c2e;">${avg3}</b> · 작년동월 <b style="color:#1c1c2e;">${lastYear}</b></div>`;
   }
-  const prepLine = !hasM ? `<div style="font-size:11.5px;color:#888;margin-top:10px;">상품화진행중 <b style="color:#1c1c2e;">${m.prep}</b>대는 등급 미분류 상태라 도넛·칩에는 포함 안 됨</div>` : '';
 
   return `<tr><td colspan="${colspan}" class="detail-cell">
     <div class="detail-box">
@@ -525,7 +532,6 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
         <span style="font-size:10.5px;color:#999;">유종별 총계</span>${fuelTotalLine}
       </div>
       ${chipSections || '<span style="color:#bbb;font-size:12.5px;">년형 정보 없음</span>'}
-      ${prepLine}
       ${salesLine}
     </div>
   </td></tr>`;
