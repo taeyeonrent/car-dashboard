@@ -69,6 +69,8 @@ table.inv-table{width:100%;border-collapse:collapse;font-size:13px;}
 
 .arrow-cell{white-space:nowrap;}
 .arrow-cell b{color:#6C63FF;}
+.tt-wrap{position:relative;}
+.tt-wrap:hover .tt-popup{display:block !important;}
 
 .empty-state{padding:50px;text-align:center;color:#aaa;font-size:13px;}
 footer{text-align:center;color:#bbb;font-size:11px;padding:20px;}
@@ -418,7 +420,7 @@ function breakdown(items){
   const fuelSet = new Set();
   items.forEach(r=>{
     const y = r.year || '년형미상';
-    const f = r.fuel || '유종미상';
+    const f = fuelLabel(r.fuel) || '유종미상';
     if(!byYear[y]) byYear[y] = {__total:0};
     byYear[y].__total++;
     byYear[y][f] = (byYear[y][f]||0)+1;
@@ -468,6 +470,38 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
   </td></tr>`;
 }
 
+function fuelLabel(f){
+  if(!f) return f;
+  const map = {'가솔린 하이브리드':'HEV', '가솔린하이브리드':'HEV', '전기':'EV'};
+  return map[f] || f;
+}
+
+function gradeCell(items, grade, value, color){
+  const filtered = items.filter(it=>it.grade===grade);
+  if(!value){ return `<td style="color:${color};">${value}</td>`; }
+  const byYear = {};
+  filtered.forEach(r=>{
+    const y = r.year || '년형미상';
+    const f = fuelLabel(r.fuel) || '유종미상';
+    if(!byYear[y]) byYear[y] = {};
+    byYear[y][f] = (byYear[y][f]||0)+1;
+  });
+  const years = Object.keys(byYear).sort();
+  const lineArr = [];
+  years.forEach(y=>{
+    Object.entries(byYear[y]).forEach(([f,n])=>{
+      lineArr.push(`<div>${y}년형 · ${f} <b>${n}</b></div>`);
+    });
+  });
+  return `<td style="position:relative;">
+    <span class="tt-wrap" style="border-bottom:1.5px dotted ${color};color:${color};cursor:pointer;">${value}
+      <div class="tt-popup" style="display:none;position:absolute;top:26px;left:50%;transform:translateX(-50%);background:#1c1c2e;color:#fff;border-radius:8px;padding:9px 12px;font-size:11px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.18);z-index:20;text-align:left;">
+        ${lineArr.join('')}
+      </div>
+    </span>
+  </td>`;
+}
+
 function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   const showShip = !!shipRows;
   const showSales = !!salesRows;
@@ -476,21 +510,21 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
     ? ['차종','총재고','장기','반장기','정상']
     : ['차종','총재고','상품화진행중','장기','정상'];
   let colsWithShip = cols;
-  if(showShip) colsWithShip = [...colsWithShip, '이번달→마감예상 출고', '마감예상재고'];
+  if(showShip) colsWithShip = [...colsWithShip, '당월출고', '예상출고', '마감예상재고'];
   if(showShip && hasM) colsWithShip = [...colsWithShip, '구매필요대수'];
 
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
     const cells = hasM
-      ? `<td class="emph">${m.total}</td><td style="color:#e2483d;">${m.long}</td><td style="color:#d98a10;">${m.mid}</td><td style="color:#1aab73;">${m.normal}</td>`
-      : `<td class="emph">${m.total}</td><td>${m.prep}</td><td style="color:#e2483d;">${m.long}</td><td style="color:#1aab73;">${m.normal}</td>`;
+      ? `<td class="emph">${m.total}</td>${gradeCell(m.items,'장기',m.long,'#e2483d')}${gradeCell(m.items,'반장기',m.mid,'#d98a10')}${gradeCell(m.items,'정상',m.normal,'#1aab73')}`
+      : `<td class="emph">${m.total}</td>${gradeCell(m.items,'',m.prep,'#888')}${gradeCell(m.items,'장기',m.long,'#e2483d')}${gradeCell(m.items,'정상',m.normal,'#1aab73')}`;
     let midCell = '', tailCell = '';
     let projStock = null;
     if(showShip){
       const sc = shipCount(shipGubun, m.name, buyFilter);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
       projStock = Math.max(0, m.total - proj);
-      midCell = `<td class="arrow-cell">${sc} → <b>${proj}</b></td><td class="emph">${projStock}</td>`;
+      midCell = `<td style="border-left:1.5px solid #f5f5fa;">${sc}</td><td style="font-weight:700;color:#6C63FF;">${proj}</td><td class="emph" style="border-left:1.5px solid #f5f5fa;">${projStock}</td>`;
     }
     let expectedDemand = null;
     if(showSales){
@@ -501,7 +535,23 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
         const basis = expectedDemand!=null ? expectedDemand : (biz.elapsed>0 ? shipCount(shipGubun,m.name,buyFilter)/biz.elapsed*biz.total : shipCount(shipGubun,m.name,buyFilter));
         const buyNeed = Math.max(0, Math.round(basis*targetCoverage - projStock));
         const buyStyle = buyNeed>0 ? 'font-weight:700;color:#e2483d;font-size:15px;' : 'color:#999;';
-        tailCell = `<td style="${buyStyle}">${buyNeed>0?'+':''}${buyNeed}</td>`;
+        if(buyNeed>0){
+          const fuelCounts = {};
+          m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
+          const lines = Object.entries(fuelCounts).map(([f,cnt])=>{
+            const alloc = Math.round(buyNeed*cnt/m.total);
+            return alloc>0 ? `<div>${f} <b>${alloc}</b></div>` : '';
+          }).join('');
+          tailCell = `<td style="position:relative;">
+            <span class="tt-wrap" style="border-bottom:1.5px dotted #e2483d;${buyStyle}cursor:pointer;">+${buyNeed}
+              <div class="tt-popup" style="display:none;position:absolute;top:26px;left:50%;transform:translateX(-50%);background:#1c1c2e;color:#fff;border-radius:8px;padding:9px 12px;font-size:11px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.18);z-index:20;text-align:left;">
+                ${lines || '<div>유종 정보 없음</div>'}
+              </div>
+            </span>
+          </td>`;
+        } else {
+          tailCell = `<td style="${buyStyle}">${buyNeed}</td>`;
+        }
       }catch(e){
         console.error('구매필요대수 계산 오류:', m.name, e);
         tailCell = `<td style="color:#ccc;">-</td>`;
@@ -526,7 +576,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
       const sc = models.reduce((a,m)=>a+shipCount(shipGubun,m.name,buyFilter),0);
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
       const projStock = Math.max(0, t.total - proj);
-      tMid = `<td class="arrow-cell">${sc} → <b>${proj}</b></td><td class="emph">${projStock}</td>`;
+      tMid = `<td style="border-left:1.5px solid #f5f5fa;">${sc}</td><td style="font-weight:700;color:#6C63FF;">${proj}</td><td class="emph" style="border-left:1.5px solid #f5f5fa;">${projStock}</td>`;
       if(hasM){
         const need = models.reduce((a,m)=>{
           const msc = shipCount(shipGubun, m.name, buyFilter);
@@ -542,7 +592,10 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   }
 
   return `<table class="inv-table">
-    <thead><tr>${colsWithShip.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+    <thead><tr>${colsWithShip.map((c,i)=>{
+      const divider = (showShip && (i===cols.length || i===cols.length+2)) ? 'border-left:1.5px solid #eee;' : '';
+      return `<th style="${divider}">${c}</th>`;
+    }).join('')}</tr></thead>
     <tbody>${totalRowHtml}${rowsHtml || `<tr><td colspan="${colsWithShip.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
   </table>`;
 }
@@ -561,7 +614,7 @@ function buildPurchaseNeedList(shinModels){
     const buyNeed = Math.max(0, Math.round(avg3*targetCoverage - projStock));
     // 유종별 배분: 현재 재고의 유종 구성 비율로 추정 배분
     const fuelCounts = {};
-    m.items.forEach(it=>{ const f=it.fuel||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
+    m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelCounts[f]=(fuelCounts[f]||0)+1; });
     const fuelAlloc = {};
     if(buyNeed>0 && m.total>0){
       Object.entries(fuelCounts).forEach(([f,cnt])=>{
