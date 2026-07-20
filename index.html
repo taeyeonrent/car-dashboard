@@ -430,57 +430,68 @@ function breakdown(items){
   return {byYear, fuels: Array.from(fuelSet)};
 }
 
-function heatColor(v, max){
-  if(!v || !max) return '#fff';
-  const t = Math.min(1, v/max);
-  // 흰색(#fff) -> 진한 빨강(#e2483d) 보간, 텍스트 대비용으로 옅은 쪽만 사용
-  const r1=255,g1=255,b1=255, r2=249,g2=200,b2=196;
-  const r=Math.round(r1+(r2-r1)*t), g=Math.round(g1+(g2-g1)*t), b=Math.round(b1+(b2-b1)*t);
-  return `rgb(${r},${g},${b})`;
-}
-
 function detailHtml(m, colspan, shipGubun, showSales, hasM){
   const grades = hasM ? ['장기','반장기','정상'] : ['장기','정상'];
-  const gradeColor = {'장기':'#e2483d','반장기':'#d98a10','정상':'#1aab73'};
+  const gradeColor = {'장기':'#e2483d','반장기':'#FFA500','정상':'#22c997'};
+  const gradeBg = {'장기':'#fff5f4','반장기':'#fff8ec','정상':'#f0fbf6'};
+  const gradeBorder = {'장기':'#ffd2ce','반장기':'#ffe0b0','정상':'#c8f0dd'};
+
+  const total = m.total || 0;
+  const gradeVals = {'장기':m.long, '반장기':hasM?m.mid:0, '정상':m.normal};
+
+  // 도넛: stroke-dasharray 누적 계산 (원둘레 100 기준)
+  let offset = 0;
+  const donutSegs = grades.map(g=>{
+    const v = gradeVals[g];
+    const pct = total ? v/total*100 : 0;
+    const seg = `<circle cx="21" cy="21" r="15.9" fill="transparent" stroke="${gradeColor[g]}" stroke-width="6" stroke-dasharray="${pct} ${100-pct}" stroke-dashoffset="${-offset}"></circle>`;
+    offset += pct;
+    return seg;
+  }).join('');
+
+  const legendRows = grades.map(g=>{
+    const v = gradeVals[g];
+    const pct = total ? Math.round(v/total*100) : 0;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:13px;color:#333;"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${gradeColor[g]};margin-right:8px;"></span>${g}재고</span>
+      <span style="font-size:12px;color:#333;">${v}대 · <b>${pct}%</b></span>
+    </div>`;
+  }).join('');
 
   // 유종별 총계 (전체, 등급 무관)
   const fuelTotals = {};
   m.items.forEach(it=>{ const f=fuelLabel(it.fuel)||'유종미상'; fuelTotals[f]=(fuelTotals[f]||0)+1; });
   const fuelTotalLine = Object.entries(fuelTotals).map(([f,n])=>`<span style="font-size:12px;color:#555;">${f} <b style="color:#1c1c2e;">${n}</b></span>`).join('');
 
-  // 매트릭스: 세로=유종, 가로 그룹=년형, 각 그룹 안에 등급별 서브컬럼
+  // 년형별 칩: 등급이 있는(장기/반장기/정상) 항목만, 년형별로 그룹핑
   const gradeSet = new Set(grades);
-  const years = Array.from(new Set(m.items.filter(it=>gradeSet.has(it.grade)).map(it=>it.year||'년형미상'))).sort();
-  const fuels = Object.keys(fuelTotals).sort();
-  const matrixFuels = Array.from(new Set(m.items.filter(it=>gradeSet.has(it.grade)).map(it=>fuelLabel(it.fuel)||'유종미상'))).sort();
-  const matrix = {}; // matrix[fuel][year][grade] = count
-  m.items.forEach(it=>{
-    const f = fuelLabel(it.fuel)||'유종미상';
-    const y = it.year||'년형미상';
-    const g = it.grade || (hasM ? '' : '상품화진행중');
-    if(!matrix[f]) matrix[f]={};
-    if(!matrix[f][y]) matrix[f][y]={};
-    matrix[f][y][g] = (matrix[f][y][g]||0)+1;
+  const byYear = {};
+  m.items.filter(it=>gradeSet.has(it.grade)).forEach(it=>{
+    const y = it.year || '년형미상';
+    if(!byYear[y]) byYear[y] = [];
+    byYear[y].push(it);
   });
-  let maxLong = 0;
-  fuels.forEach(f=>years.forEach(y=>{ const v=(matrix[f]&&matrix[f][y]&&matrix[f][y]['장기'])||0; if(v>maxLong) maxLong=v; }));
-
-  const matrixTable = (years.length && matrixFuels.length) ? `
-    <table class="pivot-table" style="width:auto;min-width:0;">
-      <thead>
-        <tr><th></th>${years.map(y=>`<th colspan="${grades.length}" class="total-col">${y}년형</th>`).join('')}</tr>
-        <tr><th style="white-space:nowrap;">유종</th>${years.map(()=>grades.map(g=>`<th style="color:${gradeColor[g]};font-size:11px;" class="${g==='장기'?'total-col':''}">${g}</th>`).join('')).join('')}</tr>
-      </thead>
-      <tbody>
-        ${matrixFuels.map(f=>`<tr><td>${f}</td>${years.map(y=>grades.map(g=>{
-          const v = (matrix[f]&&matrix[f][y]&&matrix[f][y][g])||0;
-          const isLong = g==='장기';
-          const bg = isLong ? heatColor(v, maxLong) : '#fff';
-          const cls = isLong ? 'total-col' : '';
-          return `<td class="${cls} ${v===0?'zero':''}" style="background:${bg};${v>0&&isLong?'font-weight:700;color:#7a1c14;':''}">${v===0?'-':v}</td>`;
-        }).join('')).join('')}</tr>`).join('')}
-      </tbody>
-    </table>` : '<span style="color:#bbb;font-size:12.5px;">년형 정보 없음</span>';
+  const years = Object.keys(byYear).sort();
+  const chipSections = years.map(y=>{
+    const byFuelGrade = {};
+    byYear[y].forEach(it=>{
+      const f = fuelLabel(it.fuel)||'유종미상';
+      const key = f+'|'+it.grade;
+      byFuelGrade[key] = (byFuelGrade[key]||0)+1;
+    });
+    const chips = Object.entries(byFuelGrade).map(([key,n])=>{
+      const [f,g] = key.split('|');
+      return `<div style="display:flex;align-items:center;gap:6px;background:${gradeBg[g]};border:1px solid ${gradeBorder[g]};border-radius:20px;padding:7px 14px;">
+        <span style="width:7px;height:7px;border-radius:50%;background:${gradeColor[g]};"></span>
+        <span style="font-size:12px;color:#555;">${f}</span>
+        <span style="font-size:13px;font-weight:800;color:${gradeColor[g]};">${n}대</span>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:10px;">
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">${y}년형</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">${chips}</div>
+    </div>`;
+  }).join('');
 
   let salesLine = '';
   if(showSales){
@@ -488,24 +499,31 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
     const lastYear = sameMonthLastYear(shipGubun, m.name);
     salesLine = `<div style="font-size:12.5px;color:#888;margin-top:12px;">최근3개월평균 <b style="color:#1c1c2e;">${avg3}</b> · 작년동월 <b style="color:#1c1c2e;">${lastYear}</b></div>`;
   }
-  const prepLine = !hasM ? `<div style="font-size:11.5px;color:#888;margin-top:8px;">상품화진행중 <b style="color:#1c1c2e;">${m.prep}</b>대는 매트릭스에서 별도 등급 취급(위 표에 포함 안 됨)</div>` : '';
-
-  const gradeCards = grades.map(g=>{
-    const val = g==='장기'?m.long : g==='반장기'?m.mid : m.normal;
-    const bg = g==='장기'?'#fff8f8':g==='반장기'?'#fffaf0':'#f0fbf6';
-    return `<div style="background:${bg};border-radius:8px;padding:9px 12px;flex:1;">
-      <div style="font-size:10.5px;color:${gradeColor[g]};font-weight:600;">${g}재고</div>
-      <div style="font-size:17px;font-weight:800;color:${gradeColor[g]};margin-top:2px;">${val}<span style="font-size:10px;font-weight:500;">대</span></div>
-    </div>`;
-  }).join('');
+  const prepLine = !hasM ? `<div style="font-size:11.5px;color:#888;margin-top:10px;">상품화진행중 <b style="color:#1c1c2e;">${m.prep}</b>대는 등급 미분류 상태라 도넛·칩에는 포함 안 됨</div>` : '';
 
   return `<tr><td colspan="${colspan}" class="detail-cell">
     <div class="detail-box">
-      <div style="display:flex;gap:8px;margin-bottom:12px;">${gradeCards}</div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;padding:8px 10px;background:#fafafc;border-radius:8px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div style="font-size:13px;font-weight:700;color:#1c1c2e;">${m.name} 재고 상세</div>
+        <div style="background:#f0eeff;color:#6C63FF;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;">${total}대</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:24px;margin-bottom:14px;flex-wrap:wrap;">
+        <div style="position:relative;width:112px;height:112px;flex-shrink:0;">
+          <svg width="112" height="112" viewBox="0 0 42 42" style="transform:rotate(-90deg);">
+            <circle cx="21" cy="21" r="15.9" fill="transparent" stroke="#f0f2f7" stroke-width="6"></circle>
+            ${donutSegs}
+          </svg>
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;">
+            <div style="font-size:20px;font-weight:800;color:#1c1c2e;">${total}</div>
+            <div style="font-size:10.5px;color:#999;">대</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:9px;flex:1;min-width:160px;">${legendRows}</div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;padding:8px 12px;background:#fafafc;border-radius:8px;margin-bottom:14px;">
         <span style="font-size:10.5px;color:#999;">유종별 총계</span>${fuelTotalLine}
       </div>
-      ${matrixTable}
+      ${chipSections || '<span style="color:#bbb;font-size:12.5px;">년형 정보 없음</span>'}
       ${prepLine}
       ${salesLine}
     </div>
@@ -558,7 +576,7 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
   const rowsHtml = models.map(m=>{
     const isOpen = m.name===openName;
     const cells = hasM
-      ? `<td class="emph">${m.total}</td>${gradeCell(m.items,'장기',m.long,'#e2483d')}${gradeCell(m.items,'반장기',m.mid,'#d98a10')}${gradeCell(m.items,'정상',m.normal,'#1aab73')}`
+      ? `<td class="emph">${m.total}</td>${gradeCell(m.items,'장기',m.long,'#e2483d')}${gradeCell(m.items,'반장기',m.mid,'#FFA500')}${gradeCell(m.items,'정상',m.normal,'#1aab73')}`
       : `<td class="emph">${m.total}</td>${gradeCell(m.items,'',m.prep,'#888')}${gradeCell(m.items,'장기',m.long,'#e2483d')}${gradeCell(m.items,'정상',m.normal,'#1aab73')}`;
     let midCell = '', tailCell = '';
     let projStock = null;
@@ -611,11 +629,15 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
       total:a.total+m.total, long:a.long+m.long, mid:a.mid+m.mid, normal:a.normal+m.normal, prep:a.prep+(m.prep||0)
     }), {total:0,long:0,mid:0,normal:0,prep:0});
     const tCells = hasM
-      ? `<td class="emph">${t.total}</td><td style="color:#e2483d;">${t.long}</td><td style="color:#d98a10;">${t.mid}</td><td style="color:#1aab73;">${t.normal}</td>`
+      ? `<td class="emph">${t.total}</td><td style="color:#e2483d;">${t.long}</td><td style="color:#FFA500;">${t.mid}</td><td style="color:#1aab73;">${t.normal}</td>`
       : `<td class="emph">${t.total}</td><td>${t.prep}</td><td style="color:#e2483d;">${t.long}</td><td style="color:#1aab73;">${t.normal}</td>`;
     let tMid = '', tTail = '';
     if(showShip){
-      const sc = models.reduce((a,m)=>a+shipCount(shipGubun,m.name,buyFilter),0);
+      const sc = shipRows.filter(r=>{
+        if(r.gubun!==shipGubun) return false;
+        if(buyFilter){ const buy = assetBuyMap[String(r.asset)]; if(buy!==buyFilter) return false; }
+        return true;
+      }).length;
       const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
       const projStock = Math.max(0, t.total - proj);
       tMid = `<td style="border-left:1.5px solid #f5f5fa;">${sc}</td><td style="font-weight:700;color:#6C63FF;">${proj}</td><td class="emph" style="border-left:1.5px solid #f5f5fa;">${projStock}</td>`;
