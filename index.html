@@ -58,11 +58,11 @@ table.inv-table{width:100%;border-collapse:collapse;font-size:13px;}
 .detail-stats{display:flex;gap:14px;font-size:12.5px;color:#555;flex-wrap:wrap;}
 .detail-stats b{color:#1c1c2e;}
 
-.pivot-table{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border-radius:8px;overflow:hidden;}
+.pivot-table{border-collapse:collapse;font-size:12px;background:#fff;border-radius:8px;overflow:hidden;}
 .pivot-table thead tr{background:#eeecff;}
-.pivot-table th{padding:9px 14px;font-weight:700;color:#555;text-align:center;}
+.pivot-table th{padding:6px 10px;font-weight:700;color:#555;text-align:center;}
 .pivot-table th:first-child{text-align:left;}
-.pivot-table td{padding:9px 14px;text-align:center;border-top:1px solid #f0f0f5;}
+.pivot-table td{padding:6px 10px;text-align:center;border-top:1px solid #f0f0f5;}
 .pivot-table td:first-child{text-align:left;font-weight:600;}
 .pivot-table td.total-col, .pivot-table th.total-col{border-left:1px solid #e3e0ff;font-weight:700;color:#6C63FF;}
 .pivot-table td.zero{color:#ccc;}
@@ -449,8 +449,10 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
   const fuelTotalLine = Object.entries(fuelTotals).map(([f,n])=>`<span style="font-size:12px;color:#555;">${f} <b style="color:#1c1c2e;">${n}</b></span>`).join('');
 
   // 매트릭스: 세로=유종, 가로 그룹=년형, 각 그룹 안에 등급별 서브컬럼
-  const years = Array.from(new Set(m.items.map(it=>it.year||'년형미상'))).sort();
+  const gradeSet = new Set(grades);
+  const years = Array.from(new Set(m.items.filter(it=>gradeSet.has(it.grade)).map(it=>it.year||'년형미상'))).sort();
   const fuels = Object.keys(fuelTotals).sort();
+  const matrixFuels = Array.from(new Set(m.items.filter(it=>gradeSet.has(it.grade)).map(it=>fuelLabel(it.fuel)||'유종미상'))).sort();
   const matrix = {}; // matrix[fuel][year][grade] = count
   m.items.forEach(it=>{
     const f = fuelLabel(it.fuel)||'유종미상';
@@ -463,14 +465,14 @@ function detailHtml(m, colspan, shipGubun, showSales, hasM){
   let maxLong = 0;
   fuels.forEach(f=>years.forEach(y=>{ const v=(matrix[f]&&matrix[f][y]&&matrix[f][y]['장기'])||0; if(v>maxLong) maxLong=v; }));
 
-  const matrixTable = (years.length && fuels.length) ? `
-    <table class="pivot-table">
+  const matrixTable = (years.length && matrixFuels.length) ? `
+    <table class="pivot-table" style="width:auto;min-width:0;">
       <thead>
-        <tr><th>유종</th>${years.map(y=>`<th colspan="${grades.length}" class="total-col">${y}년형</th>`).join('')}</tr>
-        <tr><th></th>${years.map(()=>grades.map(g=>`<th style="color:${gradeColor[g]};font-size:11px;" class="${g==='장기'?'total-col':''}">${g}</th>`).join('')).join('')}</tr>
+        <tr><th></th>${years.map(y=>`<th colspan="${grades.length}" class="total-col">${y}년형</th>`).join('')}</tr>
+        <tr><th style="white-space:nowrap;">유종</th>${years.map(()=>grades.map(g=>`<th style="color:${gradeColor[g]};font-size:11px;" class="${g==='장기'?'total-col':''}">${g}</th>`).join('')).join('')}</tr>
       </thead>
       <tbody>
-        ${fuels.map(f=>`<tr><td>${f}</td>${years.map(y=>grades.map(g=>{
+        ${matrixFuels.map(f=>`<tr><td>${f}</td>${years.map(y=>grades.map(g=>{
           const v = (matrix[f]&&matrix[f][y]&&matrix[f][y][g])||0;
           const isLong = g==='장기';
           const bg = isLong ? heatColor(v, maxLong) : '#fff';
@@ -745,7 +747,15 @@ function render(){
     const totalShip = shinShip + rejaShip;
     const projOf = n => biz.elapsed>0 ? Math.round(n/biz.elapsed*biz.total) : n;
     shipSummaryCard = `
-    <div class="summary-row" style="grid-template-columns:1fr 1fr;">
+    <div class="summary-row" style="grid-template-columns:0.9fr 1fr 1fr;">
+      <div class="sum-card">
+        <div class="sum-label">이번달 영업일 진척률</div>
+        <div class="sum-value" style="color:#6C63FF;">${biz.pct}<span class="sum-unit">%</span></div>
+        <div style="height:8px;background:#f0f2f7;border-radius:4px;overflow:hidden;margin-top:8px;">
+          <div style="width:${biz.pct}%;height:100%;background:#6C63FF;"></div>
+        </div>
+        <div class="split-sub" style="margin-top:6px;">${biz.elapsed}일 / ${biz.total}일</div>
+      </div>
       <div class="sum-card">
         <div class="sum-label">이번달 출고 (현재)</div>
         <div class="sum-value">${totalShip.toLocaleString()}<span class="sum-unit">대</span></div>
