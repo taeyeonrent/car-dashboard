@@ -99,7 +99,7 @@ footer{text-align:center;color:#bbb;font-size:11px;padding:20px;}
   <div id="content"><div class="empty-state">불러오는 중...</div></div>
 </main>
 
-<footer>재고현황판 · 원본 차량데이터 기준 · 분류/집계는 브라우저에서 자동 계산</footer>
+<footer>재고현황판 · 원본 차량데이터 기준 · 분류/집계는 브라우저에서 자동 계산 · build 2026-07-16b</footer>
 
 <script>
 window.addEventListener('DOMContentLoaded', () => {
@@ -513,9 +513,37 @@ function renderTable(models, openName, onClick, hasM, shipGubun, buyFilter){
     if(isOpen){ html += detailHtml(m, colsWithShip.length, shipGubun, showSales, hasM); }
     return html;
   }).join('');
+  let totalRowHtml = '';
+  if(models.length){
+    const t = models.reduce((a,m)=>({
+      total:a.total+m.total, long:a.long+m.long, mid:a.mid+m.mid, normal:a.normal+m.normal, prep:a.prep+(m.prep||0)
+    }), {total:0,long:0,mid:0,normal:0,prep:0});
+    const tCells = hasM
+      ? `<td class="emph">${t.total}</td><td style="color:#e2483d;">${t.long}</td><td style="color:#d98a10;">${t.mid}</td><td style="color:#1aab73;">${t.normal}</td>`
+      : `<td class="emph">${t.total}</td><td>${t.prep}</td><td style="color:#e2483d;">${t.long}</td><td style="color:#1aab73;">${t.normal}</td>`;
+    let tMid = '', tTail = '';
+    if(showShip){
+      const sc = models.reduce((a,m)=>a+shipCount(shipGubun,m.name,buyFilter),0);
+      const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
+      const projStock = Math.max(0, t.total - proj);
+      tMid = `<td class="arrow-cell">${sc} → <b>${proj}</b></td><td class="emph">${projStock}</td>`;
+      if(hasM){
+        const need = models.reduce((a,m)=>{
+          const msc = shipCount(shipGubun, m.name, buyFilter);
+          const mproj = (biz.elapsed>0) ? Math.round(msc/biz.elapsed*biz.total) : msc;
+          const mProjStock = Math.max(0, m.total - mproj);
+          const basis = showSales ? (recentAvg(shipGubun,m.name,3)||( biz.elapsed>0?msc/biz.elapsed*biz.total:msc)) : (biz.elapsed>0?msc/biz.elapsed*biz.total:msc);
+          return a + Math.max(0, Math.round(basis*targetCoverage - mProjStock));
+        }, 0);
+        tTail = `<td style="${need>0?'font-weight:700;color:#e2483d;font-size:15px;':'color:#999;'}">${need>0?'+':''}${need}</td>`;
+      }
+    }
+    totalRowHtml = `<tr style="background:#fafaff;font-weight:700;"><td>계</td>${tCells}${tMid}${tTail}</tr>`;
+  }
+
   return `<table class="inv-table">
     <thead><tr>${colsWithShip.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
-    <tbody>${rowsHtml || `<tr><td colspan="${colsWithShip.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
+    <tbody>${totalRowHtml}${rowsHtml || `<tr><td colspan="${colsWithShip.length}" style="text-align:center;color:#aaa;">데이터 없음</td></tr>`}</tbody>
   </table>`;
 }
 
@@ -527,7 +555,9 @@ function buildPurchaseNeedList(shinModels){
     const sc = shipCount('신차', m.name);
     const proj = (biz.elapsed>0) ? Math.round(sc/biz.elapsed*biz.total) : sc;
     const projStock = Math.max(0, m.total - proj);
-    const avg3 = salesRows ? recentAvg('신차', m.name, 3) : (biz.elapsed>0 ? sc/biz.elapsed*biz.total : sc);
+    const paceBasis = biz.elapsed>0 ? sc/biz.elapsed*biz.total : sc;
+    let avg3 = salesRows ? recentAvg('신차', m.name, 3) : paceBasis;
+    if(!avg3) avg3 = paceBasis; // 판매이력 평균이 0이면(매칭 실패 등) 이번달 출고 페이스로 대체
     const buyNeed = Math.max(0, Math.round(avg3*targetCoverage - projStock));
     // 유종별 배분: 현재 재고의 유종 구성 비율로 추정 배분
     const fuelCounts = {};
@@ -548,6 +578,8 @@ function renderPurchaseNeedCard(shinModels){
   if(!shipRows) return '';
   const list = buildPurchaseNeedList(shinModels);
   const totalNeed = list.reduce((a,b)=>a+b.buyNeed,0);
+  const shinSalesCount = salesRows ? salesRows.filter(r=>!r.gubun || r.gubun==='신차').length : 0;
+  const salesNote = salesRows ? `판매이력(신차) ${shinSalesCount}건 매칭` : '판매이력 없음(이번달 페이스로 대체 계산)';
   const rowsHtml = list.map(x=>{
     const fuelStr = Object.entries(x.fuelAlloc).map(([f,n])=>`${f} <b style="color:#1c1c2e;">${n}</b>`).join(' · ');
     return `<tr style="border-top:1px solid #f5f5fa;">
@@ -572,7 +604,7 @@ function renderPurchaseNeedCard(shinModels){
         <thead><tr><th>차종</th><th>현재고</th><th>장기재고</th><th>최근3개월평균</th><th>마감예상재고</th><th>구매필요(총)</th><th style="text-align:left;">유종별 필요대수</th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="7" style="text-align:center;color:#aaa;padding:16px;">구매가 필요한 차종이 없어요 🎉</td></tr>`}</tbody>
       </table>
-      <div style="font-size:11px;color:#999;margin-top:8px;">기준: 마감예상재고 &lt; 최근3개월평균 × 목표커버리지(${targetCoverage}개월) · 유종별 필요대수는 현재고 유종비율로 추정 배분</div>
+      <div style="font-size:11px;color:#999;margin-top:8px;">기준: 마감예상재고 &lt; 최근3개월평균 × 목표커버리지(${targetCoverage}개월) · 유종별 필요대수는 현재고 유종비율로 추정 배분 · ${salesNote}</div>
     </div>`;
 }
 
@@ -592,7 +624,7 @@ function render(){
   let shipBadge = '';
   if(shipRows){
     const biz = getBusinessDays();
-    shipBadge = ` · 이번달 영업일 진척률 <b style="color:#6C63FF;">${biz.pct}%</b> (${biz.elapsed}일/${biz.total}일) — 마감예상출고는 현재 페이스 비례 추정, 익월대비 구매필요는 마감예상재고가 (판매이력 있으면 최근3개월평균, 없으면 이번달 페이스) 기준 예상수요에 못 미치는 만큼`;
+    shipBadge = ` — 마감예상출고는 현재 페이스 비례 추정, 구매필요는 마감예상재고가 (판매이력 있으면 최근3개월평균, 없으면 이번달 페이스) 기준 예상수요 × 목표커버리지에 못 미치는 만큼`;
   }
 
   let shipSummaryCard = '';
@@ -607,12 +639,18 @@ function render(){
       <div class="sum-card">
         <div class="sum-label">이번달 출고 (현재)</div>
         <div class="sum-value">${totalShip.toLocaleString()}<span class="sum-unit">대</span></div>
-        <div class="split-sub">신차 ${shinShip} &nbsp;/&nbsp; 재렌트 ${rejaShip}</div>
+        <div class="split-sub" style="display:flex;flex-direction:column;gap:2px;margin-top:6px;">
+          <span>신차 <b style="color:#1c1c2e;">${shinShip}</b></span>
+          <span>재렌트 <b style="color:#1c1c2e;">${rejaShip}</b></span>
+        </div>
       </div>
       <div class="sum-card">
         <div class="sum-label">마감 예상 출고</div>
         <div class="sum-value" style="color:#6C63FF;">${projOf(totalShip).toLocaleString()}<span class="sum-unit">대</span></div>
-        <div class="split-sub">신차 ${projOf(shinShip)} &nbsp;/&nbsp; 재렌트 ${projOf(rejaShip)}</div>
+        <div class="split-sub" style="display:flex;flex-direction:column;gap:2px;margin-top:6px;">
+          <span>신차 <b style="color:#1c1c2e;">${projOf(shinShip)}</b></span>
+          <span>재렌트 <b style="color:#1c1c2e;">${projOf(rejaShip)}</b></span>
+        </div>
       </div>
     </div>`;
   }
